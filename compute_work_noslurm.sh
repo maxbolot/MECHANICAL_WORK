@@ -5,13 +5,15 @@ set -euo pipefail
 # One date (yyyymmdd) per line in list file.
 LIST_FILE=${1:-list.txt}
 
+module load intel-oneapi/2024.2 hdf5/oneapi-2024.2/1.14.4 netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2
+
 # Hardcoded OpenMP setting for serial execution.
-export OMP_NUM_THREADS=1
+export OMP_NUM_THREADS=4
 
 # Paths
-SOURCE_ROOT=/scratch/gpfs/mbolot/data/20191020.00Z.C3072.L79x2_pire
-TARGET_DIR_COMPUTE=/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720
-TARGET_DIR_HISTOGRAMS=/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms
+SOURCE_ROOT=/scratch/gpfs/STF/mbolot/data/20191020.00Z.C3072.L79x2_pire
+TARGET_DIR_COMPUTE=/scratch/gpfs/STF/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720
+TARGET_DIR_HISTOGRAMS=/scratch/gpfs/STF/mbolot/results/GLOBALFV3/work_histograms
 LOG_DIR=./logs
 
 # Prefer local/bin build output, fallback to legacy bin path.
@@ -33,7 +35,7 @@ fi
 
 mkdir -p "$TARGET_DIR_COMPUTE" "$TARGET_DIR_HISTOGRAMS" "$LOG_DIR"
 
-RUN_LOG="$LOG_DIR/compute_work_fork_$(date +%Y%m%d_%H%M%S).log"
+RUN_LOG="$LOG_DIR/compute_work_noslurm_$(date +%Y%m%d_%H%M%S).log"
 echo "[$(date +%F\ %T)] Starting serial run with list: $LIST_FILE" | tee -a "$RUN_LOG"
 echo "[$(date +%F\ %T)] Using binary: $COMPUTE_WORK_BIN" | tee -a "$RUN_LOG"
 
@@ -83,3 +85,5 @@ EOF
 done < "$LIST_FILE"
 
 echo "[$(date +%F\ %T)] All dates processed serially." | tee -a "$RUN_LOG"
+
+module unload intel-oneapi hdf5 netcdf

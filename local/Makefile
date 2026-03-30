@@ -1,4 +1,5 @@
 FC := ifx
+SHELL := /bin/bash
 
 SRC_DIR := src
 OBJ_DIR := obj
@@ -11,22 +12,26 @@ OBJECTS := $(OBJ_DIR)/compute_work.o
 EXT_INC_DIR := $(HOME)/local/include
 EXT_LIB_DIR := $(HOME)/local/lib
 
-NETCDF_FFLAGS := $(shell command -v nf-config >/dev/null 2>&1 && nf-config --fflags)
-NETCDF_FLIBS := $(shell command -v nf-config >/dev/null 2>&1 && nf-config --flibs)
+MODULE_INIT := source /usr/share/Modules/init/bash >/dev/null 2>&1 || source /etc/profile.d/modules.sh >/dev/null 2>&1
+MODULE_LOAD := module load intel-oneapi/2024.2 hdf5/oneapi-2024.2/1.14.4 netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2
 
-FFLAGS := -O3 -qopenmp $(NETCDF_FFLAGS) -I$(EXT_INC_DIR)
+FFLAGS := -O3 -qopenmp -I$(EXT_INC_DIR)
 LDFLAGS := -qopenmp -L$(EXT_LIB_DIR)
-LDLIBS := -linterp -lnc -lhist $(NETCDF_FLIBS)
+LDLIBS := -linterp -lnc -lhist
 
 .PHONY: all clean
 
 all: $(TARGET)
 
 $(TARGET): $(OBJECTS) | $(BIN_DIR)
-	$(FC) $(LDFLAGS) -o $@ $(OBJECTS) $(LDLIBS)
+	$(MODULE_INIT) && \
+	$(MODULE_LOAD) && \
+	$(FC) $(LDFLAGS) -o $@ $(OBJECTS) $(LDLIBS) $$(nf-config --flibs)
 
 $(OBJ_DIR)/compute_work.o: $(SRC_DIR)/compute_work.f90 | $(OBJ_DIR)
-	$(FC) $(FFLAGS) -c $< -o $@
+	$(MODULE_INIT) && \
+	$(MODULE_LOAD) && \
+	$(FC) $(FFLAGS) $$(nf-config --fflags) -c $< -o $@
 
 $(OBJ_DIR):
 	mkdir -p $@

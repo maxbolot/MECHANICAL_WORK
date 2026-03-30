@@ -35,6 +35,7 @@ program compute_work
     double precision, dimension(:,:,:,:,:), allocatable :: omqg_buffer     ! omqg
     double precision, dimension(:), allocatable :: lon                     ! longitude
     double precision, dimension(:), allocatable :: lat                     ! latitude
+    double precision, dimension(:), allocatable :: time_vals               ! time coordinate values
     double precision, dimension(:,:), allocatable :: cell_area             ! grid-cell area (nx x ny)
     double precision, dimension(:), allocatable :: pr_edges                ! precipitation histogram edges
     double precision, dimension(:), allocatable :: work_edges              ! work histogram edges
@@ -67,18 +68,20 @@ program compute_work
     integer :: ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr
     integer :: ncid_work_out
     integer :: ncid_hist_out
-    integer :: dimid_out_nx, dimid_out_ny, dimid_out_nt
+    integer :: dimid_out_lon, dimid_out_lat, dimid_out_time
     integer :: tmp_dimids(4)
+    integer :: ncstatus
     integer :: varid_dz, varid_temp, varid_omega, varid_qv, varid_qw, varid_qr, varid_qi, varid_qs, varid_qg
     integer :: varid_omt, varid_omqv, varid_omqw, varid_omqr, varid_omqi, varid_omqs, varid_omqg, varid_pr
-    integer :: varid_lon, varid_lat
-    integer :: varid_out_lon, varid_out_lat
+    integer :: varid_lon, varid_lat, varid_time
+    integer :: varid_out_lon, varid_out_lat, varid_out_time
     integer :: varid_work_out, varid_lift_out
-    integer :: varid_hist_area, varid_hist2d_work, varid_hist2d_lift
-    integer :: dimid_nbin_pr, dimid_nbin_work
+    integer :: varid_hist_area, varid_hist2d_work, varid_hist2d_lift, varid_pr_edges, varid_work_edges
+    integer :: dimid_nbin_pr, dimid_nbin_work, dimid_nedges_pr, dimid_nedges_work
     character(len=255) :: path_dz, path_temp, path_omega, path_qv, path_qw, path_qr, path_qi, path_qs, path_qg
     character(len=255) :: path_omt, path_omqv, path_omqw, path_omqr, path_omqi, path_omqs, path_omqg, path_pr
     character(len=255) :: path_work_out, path_hist_out
+    character(len=255) :: time_units, time_calendar
 
     namelist /config/ path_dz, path_temp, path_omega, path_qv, path_qw, path_qr, path_qi, path_qs, path_qg, &
                      path_omt, path_omqv, path_omqw, path_omqr, path_omqi, path_omqs, path_omqg, & 
@@ -127,6 +130,7 @@ program compute_work
     allocate(omqg_buffer(nx, chunk_size, nplev, 1, nbuf))
     allocate(lon(nx))
     allocate(lat(ny))
+    allocate(time_vals(nt))
     allocate(pr_edges(npr_edges))
     allocate(work_edges(nwork_edges))
     allocate(pr_buffer(nx, chunk_size, 1, nbuf))
@@ -145,6 +149,19 @@ program compute_work
     call check(nf90_inq_varid(ncid_dz, "grid_yt_coarse", varid_lat))
     call check(nf90_get_var(ncid_dz, varid_lon, lon))
     call check(nf90_get_var(ncid_dz, varid_lat, lat))
+    time_units = "hours since 1900-01-01 00:00:00"
+    time_calendar = "standard"
+    do t = 1, nt
+        time_vals(t) = dble(t - 1)
+    end do
+    ncstatus = nf90_inq_varid(ncid_dz, "time", varid_time)
+    if (ncstatus == nf90_noerr) then
+        call check(nf90_get_var(ncid_dz, varid_time, time_vals))
+        ncstatus = nf90_get_att(ncid_dz, varid_time, "units", time_units)
+        if (ncstatus /= nf90_noerr) time_units = "hours since 1900-01-01 00:00:00"
+        ncstatus = nf90_get_att(ncid_dz, varid_time, "calendar", time_calendar)
+        if (ncstatus /= nf90_noerr) time_calendar = "standard"
+    end if
     call compute_cell_areas(lon, lat, cell_area)
 
     ! Resolve longitude clipping indices on the model grid.
@@ -201,37 +218,51 @@ program compute_work
 
     ! create work output file
     call check(nf90_create(trim(adjustl(path_work_out)), nf90_clobber, ncid_work_out))
-    call check(nf90_def_dim(ncid_work_out, "nx", nx, dimid_out_nx))
-    call check(nf90_def_dim(ncid_work_out, "ny", ny, dimid_out_ny))
-    call check(nf90_def_dim(ncid_work_out, "nt", nt, dimid_out_nt))
-    call check(nf90_def_var(ncid_work_out, "lon", nf90_double, (/dimid_out_nx/), varid_out_lon))
+    call check(nf90_put_att(ncid_work_out, nf90_global, "Conventions", "CF-1.8"))
+    call check(nf90_def_dim(ncid_work_out, "lon", nx, dimid_out_lon))
+    call check(nf90_def_dim(ncid_work_out, "lat", ny, dimid_out_lat))
+    call check(nf90_def_dim(ncid_work_out, "time", nt, dimid_out_time))
+    call check(nf90_def_var(ncid_work_out, "lon", nf90_double, (/dimid_out_lon/), varid_out_lon))
     call check(nf90_put_att(ncid_work_out, varid_out_lon, "long_name", "longitude"))
-    call check(nf90_put_att(ncid_work_out, varid_out_lon, "units", "degrees_E"))
-    call check(nf90_def_var(ncid_work_out, "lat", nf90_double, (/dimid_out_ny/), varid_out_lat))
+    call check(nf90_put_att(ncid_work_out, varid_out_lon, "standard_name", "longitude"))
+    call check(nf90_put_att(ncid_work_out, varid_out_lon, "units", "degrees_east"))
+    call check(nf90_put_att(ncid_work_out, varid_out_lon, "axis", "X"))
+    call check(nf90_def_var(ncid_work_out, "lat", nf90_double, (/dimid_out_lat/), varid_out_lat))
     call check(nf90_put_att(ncid_work_out, varid_out_lat, "long_name", "latitude"))
-    call check(nf90_put_att(ncid_work_out, varid_out_lat, "units", "degrees_N"))
-    call check(nf90_def_var(ncid_work_out, "work", nf90_double, (/dimid_out_nx, dimid_out_ny, dimid_out_nt/), varid_work_out))
+    call check(nf90_put_att(ncid_work_out, varid_out_lat, "standard_name", "latitude"))
+    call check(nf90_put_att(ncid_work_out, varid_out_lat, "units", "degrees_north"))
+    call check(nf90_put_att(ncid_work_out, varid_out_lat, "axis", "Y"))
+    call check(nf90_def_var(ncid_work_out, "time", nf90_double, (/dimid_out_time/), varid_out_time))
+    call check(nf90_put_att(ncid_work_out, varid_out_time, "long_name", "time"))
+    call check(nf90_put_att(ncid_work_out, varid_out_time, "standard_name", "time"))
+    call check(nf90_put_att(ncid_work_out, varid_out_time, "units", trim(time_units)))
+    call check(nf90_put_att(ncid_work_out, varid_out_time, "calendar", trim(time_calendar)))
+    call check(nf90_put_att(ncid_work_out, varid_out_time, "axis", "T"))
+    call check(nf90_def_var(ncid_work_out, "work", nf90_double, (/dimid_out_lon, dimid_out_lat, dimid_out_time/), varid_work_out))
     call check(nf90_put_att(ncid_work_out, varid_work_out, "long_name", "work"))
     call check(nf90_put_att(ncid_work_out, varid_work_out, "units", "Watts per square meter"))
-    call check(nf90_def_var(ncid_work_out, "lift", nf90_double, (/dimid_out_nx, dimid_out_ny, dimid_out_nt/), varid_lift_out))
+    call check(nf90_put_att(ncid_work_out, varid_work_out, "coordinates", "lon lat"))
+    call check(nf90_def_var(ncid_work_out, "lift", nf90_double, (/dimid_out_lon, dimid_out_lat, dimid_out_time/), varid_lift_out))
     call check(nf90_put_att(ncid_work_out, varid_lift_out, "long_name", "lift work"))
     call check(nf90_put_att(ncid_work_out, varid_lift_out, "units", "Watts per square meter"))
+    call check(nf90_put_att(ncid_work_out, varid_lift_out, "coordinates", "lon lat"))
     call check(nf90_enddef(ncid_work_out))
     call check(nf90_put_var(ncid_work_out, varid_out_lon, lon))
     call check(nf90_put_var(ncid_work_out, varid_out_lat, lat))
+    call check(nf90_put_var(ncid_work_out, varid_out_time, time_vals))
 
     ! populate variable IDs for input files
     call check(nf90_inq_varid(ncid_temp, "temp_coarse", varid_temp))
     call check(nf90_inq_varid(ncid_omega, "ptend_coarse", varid_omega))
     call check(nf90_inq_varid(ncid_qv, "sphum_coarse", varid_qv))
     call check(nf90_inq_varid(ncid_qw, "liq_wat_coarse", varid_qw))
-    call check(nf90_inq_varid(ncid_qr, "rain_coarse", varid_qr))
-    call check(nf90_inq_varid(ncid_qi, "ice_coarse", varid_qi))
-    call check(nf90_inq_varid(ncid_qs, "snow_coarse", varid_qs))
+    call check(nf90_inq_varid(ncid_qr, "rainwat_coarse", varid_qr))
+    call check(nf90_inq_varid(ncid_qi, "ice_wat_coarse", varid_qi))
+    call check(nf90_inq_varid(ncid_qs, "snowwat_coarse", varid_qs))
     call check(nf90_inq_varid(ncid_qg, "graupel_coarse", varid_qg))
     call check(nf90_inq_varid(ncid_omt, "omT_coarse", varid_omt))
     call check(nf90_inq_varid(ncid_omqv, "omqv_coarse", varid_omqv))
-    call check(nf90_inq_varid(ncid_omqw, "omqw_coarse", varid_omqw))
+    call check(nf90_inq_varid(ncid_omqw, "omql_coarse", varid_omqw))
     call check(nf90_inq_varid(ncid_omqr, "omqr_coarse", varid_omqr))
     call check(nf90_inq_varid(ncid_omqi, "omqi_coarse", varid_omqi))
     call check(nf90_inq_varid(ncid_omqs, "omqs_coarse", varid_omqs))
@@ -288,6 +319,8 @@ program compute_work
 
             ystart = (yc - 1) * chunk_size + 1
             buf_ystart(ibuf) = ystart
+
+            print *, 'loading y-chunk', yc, 'into pipeline'
 
             ! Fill this buffer with all required input fields for one chunk.
             call check(nf90_get_var(ncid_dz, varid_dz, dz_buffer(:,:,:,:,ibuf), (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
@@ -413,9 +446,13 @@ program compute_work
     call check(nf90_create(trim(adjustl(path_hist_out)), nf90_clobber, ncid_hist_out))
     call check(nf90_def_dim(ncid_hist_out, "nbin_pr", npr_edges - 1, dimid_nbin_pr))
     call check(nf90_def_dim(ncid_hist_out, "nbin_work", nwork_edges - 1, dimid_nbin_work))
+    call check(nf90_def_dim(ncid_hist_out, "nedges_pr", npr_edges, dimid_nedges_pr))
+    call check(nf90_def_dim(ncid_hist_out, "nedges_work", nwork_edges, dimid_nedges_work))
     call check(nf90_def_var(ncid_hist_out, "hist_area", nf90_double, (/dimid_nbin_pr/), varid_hist_area))
     call check(nf90_def_var(ncid_hist_out, "hist2d_work", nf90_double, (/dimid_nbin_pr, dimid_nbin_work/), varid_hist2d_work))
     call check(nf90_def_var(ncid_hist_out, "hist2d_lift", nf90_double, (/dimid_nbin_pr, dimid_nbin_work/), varid_hist2d_lift))
+    call check(nf90_def_var(ncid_hist_out, "pr_edges", nf90_double, (/dimid_nedges_pr/), varid_pr_edges))
+    call check(nf90_def_var(ncid_hist_out, "work_edges", nf90_double, (/dimid_nedges_work/), varid_work_edges))
     call check(nf90_put_att(ncid_hist_out, nf90_global, "clip_lon_west", lon(lon_clip_start)))
     call check(nf90_put_att(ncid_hist_out, nf90_global, "clip_lon_east", lon(lon_clip_end)))
     call check(nf90_put_att(ncid_hist_out, nf90_global, "clip_lat_south", lat(lat_clip_start)))
@@ -424,6 +461,8 @@ program compute_work
     call check(nf90_put_var(ncid_hist_out, varid_hist_area, hist_area_out))
     call check(nf90_put_var(ncid_hist_out, varid_hist2d_work, hist2d_work_out))
     call check(nf90_put_var(ncid_hist_out, varid_hist2d_lift, hist2d_lift_out))
+    call check(nf90_put_var(ncid_hist_out, varid_pr_edges, pr_edges))
+    call check(nf90_put_var(ncid_hist_out, varid_work_edges, work_edges))
     call check(nf90_close(ncid_hist_out))
 
 end program compute_work

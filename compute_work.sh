@@ -45,9 +45,9 @@ fi
 module load intel-oneapi/2024.2 hdf5/oneapi-2024.2/1.14.4 netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2
 
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-$CPUS_PER_TASK}
-source_dir=/scratch/gpfs/mbolot/data/20191020.00Z.C3072.L79x2_pire/$date
-target_dir_compute=/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720
-target_dir_histograms=/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms
+source_dir=/scratch/gpfs/STF/mbolot/data/20191020.00Z.C3072.L79x2_pire/$date
+target_dir_compute=/scratch/gpfs/STF/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720
+target_dir_histograms=/scratch/gpfs/STF/mbolot/results/GLOBALFV3/work_histograms
 
 [[ -d $target_dir_compute ]] || mkdir -p $target_dir_compute
 [[ -d $target_dir_histograms ]] || mkdir -p $target_dir_histograms
