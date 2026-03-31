@@ -1,5 +1,0 @@
-[2026-03-30 17:55:56] Starting serial run with list: list.txt
-[2026-03-30 17:55:56] Using binary: ./local/bin/compute_work_async
-[2026-03-30 17:55:56] Running compute_work for date 2020080500 (log: ./logs/compute_work_2020080500.log)
-[2026-03-30 18:15:34] Finished date 2020080500
-[2026-03-30 18:15:34] All dates processed serially.
