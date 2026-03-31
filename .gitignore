@@ -1,0 +1,9 @@
+local/bin/
+local/obj/
+logs/
+
+.vscode/ifx-lint.log
+
+*.o
+*.mod
+*.a
