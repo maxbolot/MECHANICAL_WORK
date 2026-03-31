@@ -8,7 +8,7 @@ LIST_FILE=${1:-list.txt}
 module load intel-oneapi/2024.2 hdf5/oneapi-2024.2/1.14.4 netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2
 
 # Hardcoded OpenMP setting for serial execution.
-export OMP_NUM_THREADS=4
+export OMP_NUM_THREADS=3
 
 # Paths
 SOURCE_ROOT=/scratch/gpfs/STF/mbolot/data/20191020.00Z.C3072.L79x2_pire
@@ -17,9 +17,9 @@ TARGET_DIR_HISTOGRAMS=/scratch/gpfs/STF/mbolot/results/GLOBALFV3/work_histograms
 LOG_DIR=./logs
 
 # Prefer local/bin build output, fallback to legacy bin path.
-COMPUTE_WORK_BIN=./local/bin/compute_work
+COMPUTE_WORK_BIN=./local/bin/compute_work_async
 if [[ ! -x "$COMPUTE_WORK_BIN" ]]; then
-    COMPUTE_WORK_BIN=./bin/compute_work
+    COMPUTE_WORK_BIN=./bin/compute_work_async
 fi
 
 if [[ ! -f "$LIST_FILE" ]]; then

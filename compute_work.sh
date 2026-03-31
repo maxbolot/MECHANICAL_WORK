@@ -49,6 +49,17 @@ source_dir=/scratch/gpfs/STF/mbolot/data/20191020.00Z.C3072.L79x2_pire/$date
 target_dir_compute=/scratch/gpfs/STF/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720
 target_dir_histograms=/scratch/gpfs/STF/mbolot/results/GLOBALFV3/work_histograms
 
+# Prefer local/bin build output, fallback to legacy bin path.
+COMPUTE_WORK_BIN=${COMPUTE_WORK_BIN:-./local/bin/compute_work}
+if [[ ! -x "$COMPUTE_WORK_BIN" && "$COMPUTE_WORK_BIN" == "./local/bin/compute_work" ]]; then
+    COMPUTE_WORK_BIN=./bin/compute_work
+fi
+if [[ ! -x "$COMPUTE_WORK_BIN" ]]; then
+    echo "Error: compute_work binary not found or not executable." >&2
+    echo "Tried: ./local/bin/compute_work and ./bin/compute_work" >&2
+    exit 1
+fi
+
 [[ -d $target_dir_compute ]] || mkdir -p $target_dir_compute
 [[ -d $target_dir_histograms ]] || mkdir -p $target_dir_histograms
 
@@ -76,7 +87,7 @@ cat << EOF > config.nml
 /
 EOF
 
-./bin/compute_work config.nml
+"$COMPUTE_WORK_BIN" config.nml
 
 module unload intel-oneapi hdf5 netcdf
 

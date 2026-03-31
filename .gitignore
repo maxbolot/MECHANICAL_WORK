@@ -3,6 +3,10 @@ local/obj/
 logs/
 
 .vscode/ifx-lint.log
+.vscode/ifx-lint.sh
+.vscode/settings.json
+
+.fortlsrc
 
 *.o
 *.mod
