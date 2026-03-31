@@ -1,0 +1,7 @@
+{
+  "source_dirs": [
+    "./**",
+    "/home/mbolot/local/src/**"
+  ],
+  "disable_diagnostics": true
+}

@@ -1,3 +1,19 @@
+! async fork of compute_work.f90
+!
+! Key structural change: NetCDF reads are moved into an !$omp task
+! (protected by !$omp critical(netcdf_io)) so that I/O and computation
+! can overlap.  The master thread is freed from blocking on reads and
+! can immediately service write-ready buffers while a worker thread
+! performs the next read under the critical section.
+!
+! Buffer state convention:
+!   0 = free
+!   2 = compute finished, ready to be written to output NetCDF
+!   3 = in use (being read OR computed)
+!
+! Task dependency token array  fetch_ready(nbuf)  is used exclusively
+! as an OMP dependency address; its integer value is never read.
+
 program compute_work
 
     use omp_lib
@@ -63,7 +79,7 @@ program compute_work
     integer :: hist_y_start, hist_y_end, y_local_start, y_local_end
     integer :: ibuf, istate
     integer :: buf_state(nbuf), buf_ystart(nbuf)
-    logical :: active
+    integer :: fetch_ready(nbuf)   ! task dependency token (address only, never read)
     logical :: found_lat_start, found_lat_end, found_lon_start, found_lon_end
     integer :: tmp_unit, ios
     integer :: ncid_dz, ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg
@@ -206,22 +222,22 @@ program compute_work
     if (.not. found_lat_end) lat_clip_end = ny
 
     ! open remaining input files
-    call check(nf90_open(trim(adjustl(path_temp)), nf90_write, ncid_temp))
-    call check(nf90_open(trim(adjustl(path_omega)), nf90_write, ncid_omega))
-    call check(nf90_open(trim(adjustl(path_qv)), nf90_write, ncid_qv))
-    call check(nf90_open(trim(adjustl(path_qw)), nf90_write, ncid_qw))
-    call check(nf90_open(trim(adjustl(path_qr)), nf90_write, ncid_qr))
-    call check(nf90_open(trim(adjustl(path_qi)), nf90_write, ncid_qi))
-    call check(nf90_open(trim(adjustl(path_qs)), nf90_write, ncid_qs))
-    call check(nf90_open(trim(adjustl(path_qg)), nf90_write, ncid_qg))
-    call check(nf90_open(trim(adjustl(path_omt)), nf90_write, ncid_omt))
-    call check(nf90_open(trim(adjustl(path_omqv)), nf90_write, ncid_omqv))
-    call check(nf90_open(trim(adjustl(path_omqw)), nf90_write, ncid_omqw))
-    call check(nf90_open(trim(adjustl(path_omqr)), nf90_write, ncid_omqr))
-    call check(nf90_open(trim(adjustl(path_omqi)), nf90_write, ncid_omqi))
-    call check(nf90_open(trim(adjustl(path_omqs)), nf90_write, ncid_omqs))
-    call check(nf90_open(trim(adjustl(path_omqg)), nf90_write, ncid_omqg))
-    call check(nf90_open(trim(adjustl(path_pr)), nf90_write, ncid_pr))
+    call check(nf90_open(trim(adjustl(path_temp)), nf90_nowrite, ncid_temp))
+    call check(nf90_open(trim(adjustl(path_omega)), nf90_nowrite, ncid_omega))
+    call check(nf90_open(trim(adjustl(path_qv)), nf90_nowrite, ncid_qv))
+    call check(nf90_open(trim(adjustl(path_qw)), nf90_nowrite, ncid_qw))
+    call check(nf90_open(trim(adjustl(path_qr)), nf90_nowrite, ncid_qr))
+    call check(nf90_open(trim(adjustl(path_qi)), nf90_nowrite, ncid_qi))
+    call check(nf90_open(trim(adjustl(path_qs)), nf90_nowrite, ncid_qs))
+    call check(nf90_open(trim(adjustl(path_qg)), nf90_nowrite, ncid_qg))
+    call check(nf90_open(trim(adjustl(path_omt)), nf90_nowrite, ncid_omt))
+    call check(nf90_open(trim(adjustl(path_omqv)), nf90_nowrite, ncid_omqv))
+    call check(nf90_open(trim(adjustl(path_omqw)), nf90_nowrite, ncid_omqw))
+    call check(nf90_open(trim(adjustl(path_omqr)), nf90_nowrite, ncid_omqr))
+    call check(nf90_open(trim(adjustl(path_omqi)), nf90_nowrite, ncid_omqi))
+    call check(nf90_open(trim(adjustl(path_omqs)), nf90_nowrite, ncid_omqs))
+    call check(nf90_open(trim(adjustl(path_omqg)), nf90_nowrite, ncid_omqg))
+    call check(nf90_open(trim(adjustl(path_pr)), nf90_nowrite, ncid_pr))
 
     ! create work output file
     call check(nf90_create(trim(adjustl(path_work_out)), nf90_clobber, ncid_work_out))
@@ -287,71 +303,105 @@ program compute_work
         work_edges(iedge) = -2500.0d0 + dble(iedge - 1)
     end do
 
-    ! determine number of y-chunks to process based on chunk size and total y dimension; assume ny is divisible by chunk_size for simplicity
-    nchunks = ny/chunk_size
+    ! determine number of y-chunks
+    nchunks = ny / chunk_size
 
-    ! Buffer state convention:
-    !   0 = free slot
-    !   1 = compute task is running on this buffer
-    !   2 = compute finished; chunk is ready to be written to output NetCDF
-    ! Pipeline over y-chunks: load, compute work/lift, accumulate clipped histograms, then flush outputs.
-    !$omp parallel default(shared) private(t,yc,ibuf,istate,ystart,y,x,p,geometric_thickness,work_acc,lift_acc,active,hist_y_start,hist_y_end,y_local_start,y_local_end)
+    ! -----------------------------------------------------------------------
+    ! Async pipeline over y-chunks.
+    !
+    ! For each chunk the master launches two dependent tasks:
+    !   1. read_task  : fills buffer from disk under !$omp critical(netcdf_io)
+    !                   so that NetCDF calls are always serialized while still
+    !                   freeing the master thread.
+    !   2. compute_task: computes work/lift; depends on read_task via the
+    !                   fetch_ready(ibuf) dependency token.
+    !
+    ! The master thread polls buf_state for state==2 (compute done) and
+    ! writes the result to the output file.  Because writes happen on the
+    ! master while reads happen inside a task on a worker thread, reads and
+    ! writes can overlap — unlike the original synchronous design.
+    !
+    ! OMP task dependency anti-dependency semantics ensure that the read task
+    ! for chunk yc+nbuf automatically waits for the compute task for chunk yc
+    ! to complete before starting (preventing buffer corruption on reuse).
+    ! -----------------------------------------------------------------------
+
+    !$omp parallel default(shared) private(t,yc,ibuf,istate,ystart,y,x,p,geometric_thickness,work_acc,lift_acc,hist_y_start,hist_y_end,y_local_start,y_local_end)
     !$omp master
+
     do t = 1, nt
         print *, 'timestep', t, 'of', nt
 
         ! Reset buffer metadata for this timestep.
-        buf_state = 0
-        buf_ystart = 0
+        buf_state   = 0
+        buf_ystart  = 0
+        fetch_ready = 0
 
-        ! Producer loop: load one y-chunk into a reusable pipeline buffer.
         do yc = 1, nchunks
-            ibuf = mod(yc - 1, nbuf) + 1
+            ibuf   = mod(yc - 1, nbuf) + 1
+            ystart = (yc - 1) * chunk_size + 1
 
-            ! If this buffer is still computing (state 1), keep yielding until it is reusable.
+            ! Wait until this buffer slot is completely free (state == 0).
+            ! If it is write-ready (state == 2), drain it now on the master
+            ! thread — this write can overlap with a read task running on a
+            ! worker thread for a different ibuf.
             do
                 !$omp atomic read
                 istate = buf_state(ibuf)
-                if (istate /= 1) exit
+                if (istate == 0) exit
+                if (istate == 2) then
+                    !$omp atomic write
+                    buf_state(ibuf) = 0
+                    exit
+                end if
+                ! state == 3 (read or compute in flight): yield to let tasks run.
                 !$omp taskyield
             end do
 
-            ! Opportunistic drain: if a previous chunk in this buffer is ready, write it now.
-            if (istate == 2) then
-                !$omp atomic write
-                buf_state(ibuf) = 0
-            end if
-
-            ystart = (yc - 1) * chunk_size + 1
             buf_ystart(ibuf) = ystart
 
-            print *, 'loading y-chunk', yc, 'into pipeline'
-
-            ! Fill this buffer with all required input fields for one chunk.
-            call check(nf90_get_var(ncid_dz, varid_dz, dz_buffer(:,:,:,:,ibuf), (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
-            call check(nf90_get_var(ncid_temp, varid_temp, temp_buffer(:,:,:,:,ibuf), (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
-            call check(nf90_get_var(ncid_omega, varid_omega, omega_buffer(:,:,:,:,ibuf), (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
-            call check(nf90_get_var(ncid_qv, varid_qv, qv_buffer(:,:,:,:,ibuf), (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
-            call check(nf90_get_var(ncid_qw, varid_qw, qw_buffer(:,:,:,:,ibuf), (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
-            call check(nf90_get_var(ncid_qr, varid_qr, qr_buffer(:,:,:,:,ibuf), (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
-            call check(nf90_get_var(ncid_qi, varid_qi, qi_buffer(:,:,:,:,ibuf), (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
-            call check(nf90_get_var(ncid_qs, varid_qs, qs_buffer(:,:,:,:,ibuf), (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
-            call check(nf90_get_var(ncid_qg, varid_qg, qg_buffer(:,:,:,:,ibuf), (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
-            call check(nf90_get_var(ncid_omt, varid_omt, omt_buffer(:,:,:,:,ibuf), (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
-            call check(nf90_get_var(ncid_omqv, varid_omqv, omqv_buffer(:,:,:,:,ibuf), (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
-            call check(nf90_get_var(ncid_omqw, varid_omqw, omqw_buffer(:,:,:,:,ibuf), (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
-            call check(nf90_get_var(ncid_omqr, varid_omqr, omqr_buffer(:,:,:,:,ibuf), (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
-            call check(nf90_get_var(ncid_omqi, varid_omqi, omqi_buffer(:,:,:,:,ibuf), (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
-            call check(nf90_get_var(ncid_omqs, varid_omqs, omqs_buffer(:,:,:,:,ibuf), (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
-            call check(nf90_get_var(ncid_omqg, varid_omqg, omqg_buffer(:,:,:,:,ibuf), (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
-            call check(nf90_get_var(ncid_pr, varid_pr, pr_buffer(:,:,:,ibuf), (/1,ystart,1,t/), (/nx,chunk_size,1,1/)))
-
-            ! Mark as in-flight before launching the compute task.
+            ! Claim this slot before launching tasks so any concurrent
+            ! inspector (final drain) sees it as occupied.
             !$omp atomic write
-            buf_state(ibuf) = 1
+            buf_state(ibuf) = 3
 
-            ! Per-chunk compute task: derive work/lift columns and update histogram chunks.
-            !$omp task firstprivate(ibuf,ystart) private(y,x,p,geometric_thickness,work_acc,lift_acc,hist_area_chunk,hist2d_work_chunk,hist2d_lift_chunk,hist_y_start,hist_y_end,y_local_start,y_local_end)
+            print *, 'queuing y-chunk', yc, 'into pipeline (ibuf=', ibuf, ')'
+
+            ! Read task: fills buffers from NetCDF under a critical section
+            ! so that only one thread calls nf90_get_var at a time.
+            ! depend(out: fetch_ready(ibuf)) creates an ordering point that
+            ! the following compute task waits on.
+            !$omp task depend(out: fetch_ready(ibuf)) firstprivate(ibuf, ystart, t)
+                !$omp critical(netcdf_io)
+                    call check(nf90_get_var(ncid_dz,    varid_dz,    dz_buffer(:,:,:,:,ibuf),    (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
+                    call check(nf90_get_var(ncid_temp,  varid_temp,  temp_buffer(:,:,:,:,ibuf),  (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
+                    call check(nf90_get_var(ncid_omega, varid_omega, omega_buffer(:,:,:,:,ibuf), (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
+                    call check(nf90_get_var(ncid_qv,    varid_qv,    qv_buffer(:,:,:,:,ibuf),    (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
+                    call check(nf90_get_var(ncid_qw,    varid_qw,    qw_buffer(:,:,:,:,ibuf),    (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
+                    call check(nf90_get_var(ncid_qr,    varid_qr,    qr_buffer(:,:,:,:,ibuf),    (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
+                    call check(nf90_get_var(ncid_qi,    varid_qi,    qi_buffer(:,:,:,:,ibuf),    (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
+                    call check(nf90_get_var(ncid_qs,    varid_qs,    qs_buffer(:,:,:,:,ibuf),    (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
+                    call check(nf90_get_var(ncid_qg,    varid_qg,    qg_buffer(:,:,:,:,ibuf),    (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
+                    call check(nf90_get_var(ncid_omt,   varid_omt,   omt_buffer(:,:,:,:,ibuf),   (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
+                    call check(nf90_get_var(ncid_omqv,  varid_omqv,  omqv_buffer(:,:,:,:,ibuf),  (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
+                    call check(nf90_get_var(ncid_omqw,  varid_omqw,  omqw_buffer(:,:,:,:,ibuf),  (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
+                    call check(nf90_get_var(ncid_omqr,  varid_omqr,  omqr_buffer(:,:,:,:,ibuf),  (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
+                    call check(nf90_get_var(ncid_omqi,  varid_omqi,  omqi_buffer(:,:,:,:,ibuf),  (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
+                    call check(nf90_get_var(ncid_omqs,  varid_omqs,  omqs_buffer(:,:,:,:,ibuf),  (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
+                    call check(nf90_get_var(ncid_omqg,  varid_omqg,  omqg_buffer(:,:,:,:,ibuf),  (/1,ystart,1,t/), (/nx,chunk_size,nplev,1/)))
+                    call check(nf90_get_var(ncid_pr,    varid_pr,    pr_buffer(:,:,:,ibuf),       (/1,ystart,1,t/), (/nx,chunk_size,1,1/)))
+                !$omp end critical(netcdf_io)
+            !$omp end task
+
+            ! Compute task: waits for read to finish via fetch_ready(ibuf).
+            ! depend(in: fetch_ready(ibuf)) also creates an anti-dependency so
+            ! that the *next* read task targeting the same ibuf cannot start
+            ! until this compute task completes, preventing buffer corruption.
+            !$omp task depend(in: fetch_ready(ibuf)) firstprivate(ibuf, ystart) &
+            !$omp&    private(y,x,p,geometric_thickness,work_acc,lift_acc, &
+            !$omp&            hist_area_chunk,hist2d_work_chunk,hist2d_lift_chunk, &
+            !$omp&            hist_y_start,hist_y_end,y_local_start,y_local_end)
+
             do y = 1, chunk_size
                 do x = 1, nx
                     work_acc = 0.0d0
@@ -369,12 +419,12 @@ program compute_work
                 end do
             end do
 
-            ! Convert clipped global y-bounds to local chunk indices before histogramming.
+            ! Accumulate histogram for the portion of this chunk inside the clip region.
             hist_y_start = max(ystart, lat_clip_start)
-            hist_y_end = min(ystart + chunk_size - 1, lat_clip_end)
+            hist_y_end   = min(ystart + chunk_size - 1, lat_clip_end)
             if (hist_y_start <= hist_y_end .and. lon_clip_start <= lon_clip_end) then
                 y_local_start = hist_y_start - ystart + 1
-                y_local_end = hist_y_end - ystart + 1
+                y_local_end   = hist_y_end   - ystart + 1
 
                 call bin_sumarea(pr_buffer(lon_clip_start:lon_clip_end,y_local_start:y_local_end,:,ibuf), &
                                  cell_area(lon_clip_start:lon_clip_end,hist_y_start:hist_y_end), pr_edges, hist_area_chunk)
@@ -386,14 +436,13 @@ program compute_work
                                        cell_area(lon_clip_start:lon_clip_end,hist_y_start:hist_y_end), pr_edges, work_edges, hist2d_lift_chunk)
             end if
 
-            ! Some chunks may not intersect the clipped domain; only accumulate allocated chunk histograms.
             !$omp critical(histogram_accumulation)
-            if (allocated(hist_area_chunk)) hist_area_out = hist_area_out + hist_area_chunk
-            if (allocated(hist2d_work_chunk)) hist2d_work_out = hist2d_work_out + hist2d_work_chunk
-            if (allocated(hist2d_lift_chunk)) hist2d_lift_out = hist2d_lift_out + hist2d_lift_chunk
+            if (allocated(hist_area_chunk))    hist_area_out    = hist_area_out    + hist_area_chunk
+            if (allocated(hist2d_work_chunk))  hist2d_work_out  = hist2d_work_out  + hist2d_work_chunk
+            if (allocated(hist2d_lift_chunk))  hist2d_lift_out  = hist2d_lift_out  + hist2d_lift_chunk
             !$omp end critical(histogram_accumulation)
 
-            if (allocated(hist_area_chunk)) deallocate(hist_area_chunk)
+            if (allocated(hist_area_chunk))   deallocate(hist_area_chunk)
             if (allocated(hist2d_work_chunk)) deallocate(hist2d_work_chunk)
             if (allocated(hist2d_lift_chunk)) deallocate(hist2d_lift_chunk)
 
@@ -402,33 +451,24 @@ program compute_work
             work_accum_full(:, ystart:ystart+chunk_size-1) = work_accum_full(:, ystart:ystart+chunk_size-1) + work_out_buffer(:,:,1,ibuf)
             lift_accum_full(:, ystart:ystart+chunk_size-1) = lift_accum_full(:, ystart:ystart+chunk_size-1) + lift_out_buffer(:,:,1,ibuf)
 
-            ! Hand off completed chunk to writer side of the pipeline.
+            ! Signal that this buffer is ready to be written.
             !$omp atomic write
             buf_state(ibuf) = 2
+
             !$omp end task
-        end do
 
-        ! Final drain for this timestep: flush all buffers that complete after producer loop ends.
-        do
-            active = .false.
-            do ibuf = 1, nbuf
-                !$omp atomic read
-                istate = buf_state(ibuf)
-                if (istate == 1) then
-                    active = .true.
-                else if (istate == 2) then
-                    !$omp atomic write
-                    buf_state(ibuf) = 0
-                    active = .true.
-                end if
-            end do
-            if (.not. active) exit
-            !$omp taskyield
-        end do
+        end do  ! yc
 
-        ! Ensure all tasks for this timestep are complete before advancing t.
+        ! Wait for all queued tasks (reads + computes) to finish, then do
+        ! a single linear pass to flush any remaining write-ready buffers.
         !$omp taskwait
-    end do
+
+        do ibuf = 1, nbuf
+            buf_state(ibuf) = 0
+        end do
+
+    end do  ! t
+
     !$omp end master
     !$omp end parallel
 

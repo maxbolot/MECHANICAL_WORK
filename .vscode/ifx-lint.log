@@ -1,0 +1,24 @@
+=== 2026-03-31 05:23:54 ===
+PWD=/home/mbolot/local/src/libhist
+ARGS=-qopenmp -I/home/mbolot/local/include -I/usr/local/netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2/include -syntax-only /home/mbolot/Projects/MECHANICAL_WORK/local/src/compute_work.f90
+=== 2026-03-31 05:25:04 ===
+PWD=/home/mbolot/Projects/MECHANICAL_WORK/local/src
+ARGS=-syntax-only -fpp -qopenmp -I/home/mbolot/local/include -I/usr/local/netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2/include -module /home/mbolot/.vscode-server/data/User/workspaceStorage/810e6f345010eff379a609e2c8393216/fortran-lang.linter-gfortran/include -I/home/mbolot/local/include -I/usr/local/netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2/include -free -o /home/mbolot/Projects/MECHANICAL_WORK/local/src/compute_work_async.f90.o /home/mbolot/Projects/MECHANICAL_WORK/local/src/compute_work_async.f90
+=== 2026-03-31 05:25:57 ===
+PWD=/home/mbolot/Projects/MECHANICAL_WORK/local/src
+ARGS=-syntax-only -fpp -qopenmp -I/home/mbolot/local/include -I/usr/local/netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2/include -module /home/mbolot/.vscode-server/data/User/workspaceStorage/810e6f345010eff379a609e2c8393216/fortran-lang.linter-gfortran/include -I/home/mbolot/local/include -I/usr/local/netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2/include -free -o /home/mbolot/Projects/MECHANICAL_WORK/local/src/compute_work_async.f90.o /home/mbolot/Projects/MECHANICAL_WORK/local/src/compute_work_async.f90
+=== 2026-03-31 05:25:57 ===
+PWD=/home/mbolot/Projects/MECHANICAL_WORK/local/src
+ARGS=-syntax-only -fpp -qopenmp -I/home/mbolot/local/include -I/usr/local/netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2/include -module /home/mbolot/.vscode-server/data/User/workspaceStorage/810e6f345010eff379a609e2c8393216/fortran-lang.linter-gfortran/include -I/home/mbolot/local/include -I/usr/local/netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2/include -free -o /home/mbolot/Projects/MECHANICAL_WORK/local/src/compute_work.f90.o /home/mbolot/Projects/MECHANICAL_WORK/local/src/compute_work.f90
+=== 2026-03-31 05:28:13 ===
+PWD=/home/mbolot/Projects/MECHANICAL_WORK/local/src
+ARGS=-syntax-only -fpp -qopenmp -I/home/mbolot/local/include -I/usr/local/netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2/include -module /home/mbolot/.vscode-server/data/User/workspaceStorage/810e6f345010eff379a609e2c8393216/fortran-lang.linter-gfortran/include -I/home/mbolot/local/include -I/usr/local/netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2/include -free -o /home/mbolot/Projects/MECHANICAL_WORK/local/src/compute_work.f90.o /home/mbolot/Projects/MECHANICAL_WORK/local/src/compute_work.f90
+=== 2026-03-31 05:28:27 ===
+PWD=/home/mbolot/local/src/libhist
+ARGS=-syntax-only -fpp -qopenmp -I/home/mbolot/local/include -I/usr/local/netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2/include -module /home/mbolot/.vscode-server/data/User/workspaceStorage/810e6f345010eff379a609e2c8393216/fortran-lang.linter-gfortran/include -I/home/mbolot/local/include -I/usr/local/netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2/include -free -o /home/mbolot/local/src/libhist/hist.f90.o /home/mbolot/local/src/libhist/hist.f90
+=== 2026-03-31 05:32:25 ===
+PWD=/home/mbolot/local/src/libhist
+ARGS=-syntax-only -fpp -qopenmp -I/home/mbolot/local/include -I/usr/local/netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2/include -module /home/mbolot/.vscode-server/data/User/workspaceStorage/810e6f345010eff379a609e2c8393216/fortran-lang.linter-gfortran/include -I/home/mbolot/local/include -I/usr/local/netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2/include -free -o /home/mbolot/local/src/libhist/hist.f90.o /home/mbolot/local/src/libhist/hist.f90
+=== 2026-03-31 05:32:54 ===
+PWD=/home/mbolot/local/src/libinterp
+ARGS=-syntax-only -fpp -qopenmp -I/home/mbolot/local/include -I/usr/local/netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2/include -module /home/mbolot/.vscode-server/data/User/workspaceStorage/810e6f345010eff379a609e2c8393216/fortran-lang.linter-gfortran/include -I/home/mbolot/local/include -I/usr/local/netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2/include -free -o /home/mbolot/local/src/libinterp/interp.f90.o /home/mbolot/local/src/libinterp/interp.f90

@@ -1,0 +1,13 @@
+{
+  "fortran.linter.compiler": "ifx",
+  "fortran.linter.compilerPath": "/home/mbolot/Projects/MECHANICAL_WORK/.vscode/ifx-lint.sh",
+  "fortran.linter.includePaths": [
+    "/home/mbolot/local/include",
+    "/usr/local/netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2/include"
+  ],
+  "fortran.linter.extraArgs": [
+    "-qopenmp",
+    "-I/home/mbolot/local/include",
+    "-I/usr/local/netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2/include"
+  ]
+}
