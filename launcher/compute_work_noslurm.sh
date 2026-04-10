@@ -1,25 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PROJECT_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+
 # Serial runner for systems without Slurm.
 # One date (yyyymmdd) per line in list file.
-LIST_FILE=${1:-list.txt}
+LIST_FILE=${1:-$SCRIPT_DIR/list.txt}
 
+module purge || true
 module load intel-oneapi/2024.2 hdf5/oneapi-2024.2/1.14.4 netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2
 
 # Hardcoded OpenMP setting for serial execution.
 export OMP_NUM_THREADS=3
 
-# Paths
-SOURCE_ROOT=/scratch/gpfs/STF/mbolot/data/20191020.00Z.C3072.L79x2_pire
-TARGET_DIR_COMPUTE=/scratch/gpfs/STF/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720
-TARGET_DIR_HISTOGRAMS=/scratch/gpfs/STF/mbolot/results/GLOBALFV3/work_histograms
-LOG_DIR=./logs
+# Paths for della:
+# SOURCE_ROOT=/scratch/gpfs/STF/mbolot/data/20191020.00Z.C3072.L79x2_pire
+# TARGET_DIR_COMPUTE=/scratch/gpfs/STF/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720
+# TARGET_DIR_HISTOGRAMS=/scratch/gpfs/STF/mbolot/results/GLOBALFV3/work_histograms
+# Paths for stellar:
+# SOURCE_ROOT=/scratch/cimes/GLOBALFV3/20191020.00Z.C3072.L79x2_pire/history
+# TARGET_DIR_COMPUTE=/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720 
+# TARGET_DIR_HISTOGRAMS=/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms
+SOURCE_ROOT=/scratch/cimes/GLOBALFV3/stellar_run/processed/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp
+TARGET_DIR_COMPUTE=/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv
+TARGET_DIR_HISTOGRAMS=/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_PLUS_4K_CO2_1270ppmv
+
+LOG_DIR=$PROJECT_ROOT/logs
 
 # Prefer local/bin build output, fallback to legacy bin path.
-COMPUTE_WORK_BIN=./local/bin/compute_work_async
+COMPUTE_WORK_BIN=$PROJECT_ROOT/local/bin/compute_work_async
 if [[ ! -x "$COMPUTE_WORK_BIN" ]]; then
-    COMPUTE_WORK_BIN=./bin/compute_work_async
+    COMPUTE_WORK_BIN=$PROJECT_ROOT/bin/compute_work_async
 fi
 
 if [[ ! -f "$LIST_FILE" ]]; then
@@ -52,7 +64,7 @@ while IFS= read -r raw_line; do
         continue
     fi
 
-    config_file="config_${date}.nml"
+    config_file="$PROJECT_ROOT/config_${date}.nml"
     cat > "$config_file" << EOF
 &config
     path_dz         = '$source_dir/DZ_C3072_1440x720.fre.nc',
@@ -85,5 +97,3 @@ EOF
 done < "$LIST_FILE"
 
 echo "[$(date +%F\ %T)] All dates processed serially." | tee -a "$RUN_LOG"
-
-module unload intel-oneapi hdf5 netcdf
