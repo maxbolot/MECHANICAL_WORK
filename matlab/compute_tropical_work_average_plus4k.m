@@ -14,7 +14,7 @@ end
 addpath(fullfile(script_dir, 'lib'));
 
 % Input file
-ncfile = '/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv/work_2020010300_2021011600.nc';
+ncfile = '/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv/work_2020010300_2022012000.nc';
 
 % Check if file exists
 if ~isfile(ncfile)
@@ -80,8 +80,7 @@ lift_spatial_avg = squeeze(lift_num ./ lift_den);
 % Build plotting axis from NetCDF time variable (prefer datetime if units exist)
 [plot_time, plot_time_label] = build_time_axis(ncfile, time);
 
-% Time weights account for missing steps and schedule change:
-% 5-day cadence before 2020-05-12, 1-day cadence on/after 2020-05-12.
+% Time weights account for missing steps and requested schedule change.
 [time_weights_days, missing_steps] = compute_time_weights_plus4k(time, ncfile);
 work_avg = weighted_nanmean(work_spatial_avg, time_weights_days);
 lift_avg = weighted_nanmean(lift_spatial_avg, time_weights_days);
@@ -101,7 +100,7 @@ fprintf('\n');
 fprintf('=== RESULTS ===\n');
 fprintf('Tropical latitude band: 30°S to 30°N\n');
 fprintf('Spatial weighting: cos(latitude)\n');
-fprintf('Time weighting: schedule-aware (5-day before 2020-05-12, 1-day on/after)\n');
+fprintf('Time weighting: schedule-aware warming (5-day then 1-day then 2-day segments)\n');
 fprintf('Detected missing timesteps: %d\n', missing_steps);
 fprintf('Number of time steps: %d\n', length(time));
 fprintf('\nMechanical Work (averaged over tropical band with weighted time mean): %.6f\n', work_avg);
@@ -110,6 +109,8 @@ fprintf('Lift/Work ratio (time-mean values): %.6f\n', ratio_avg);
 
 % Create figure showing time series of tropical means and ratio
 figure('Position', [100, 100, 1000, 600]);
+set(gcf, 'color', 'w');
+set(gcf, 'WindowStyle', 'docked');
 
 subplot(3, 1, 1);
 plot(plot_time, work_spatial_avg, 'b-', 'LineWidth', 1.5);

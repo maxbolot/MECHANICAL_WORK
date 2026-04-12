@@ -16,6 +16,7 @@ SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 
 NTASKS=${NTASKS:-1}
 CPUS_PER_TASK=${CPUS_PER_TASK:-1}
+MEM_PER_CPU=${MEM_PER_CPU:-3G}
 LOG_DIR=${LOG_DIR:-$PROJECT_ROOT/logs}
 # Number of compute_work instances launched concurrently inside one array task.
 INNER_PARALLEL=${INNER_PARALLEL:-1}
@@ -47,10 +48,10 @@ if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     echo "Submitting job array with $n_tasks tasks using dates from $LIST_FILE"
     echo "Dates to process: $n_dates"
     echo "Inner parallel runs per array task: $INNER_PARALLEL"
-    echo "Resources per array task: ntasks=$NTASKS, cpus-per-task=$CPUS_PER_TASK"
-    sbatch --array=1-"$n_tasks" --ntasks="$NTASKS" --cpus-per-task="$CPUS_PER_TASK" \
+    echo "Resources per array task: ntasks=$NTASKS, cpus-per-task=$CPUS_PER_TASK, mem-per-cpu=$MEM_PER_CPU"
+    sbatch --array=1-"$n_tasks" --ntasks="$NTASKS" --cpus-per-task="$CPUS_PER_TASK" --mem-per-cpu="$MEM_PER_CPU" \
             --output="$LOG_DIR/compute_work_%A_%a.out" --error="$LOG_DIR/compute_work_%A_%a.err" \
-            --export=ALL,PROJECT_ROOT="$PROJECT_ROOT",LIST_FILE="$LIST_FILE",NTASKS="$NTASKS",CPUS_PER_TASK="$CPUS_PER_TASK",LOG_DIR="$LOG_DIR",INNER_PARALLEL="$INNER_PARALLEL" "$SCRIPT_PATH"
+            --export=ALL,PROJECT_ROOT="$PROJECT_ROOT",LIST_FILE="$LIST_FILE",NTASKS="$NTASKS",CPUS_PER_TASK="$CPUS_PER_TASK",MEM_PER_CPU="$MEM_PER_CPU",LOG_DIR="$LOG_DIR",INNER_PARALLEL="$INNER_PARALLEL" "$SCRIPT_PATH"
     exit $?
 fi
 

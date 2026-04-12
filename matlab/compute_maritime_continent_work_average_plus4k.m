@@ -14,7 +14,7 @@ end
 addpath(fullfile(script_dir, 'lib'));
 
 % Input file
-ncfile = '/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180/work_2020010800_2021011200.nc';
+ncfile = '/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv/work_2020010300_2022012000.nc';
 
 % Check if file exists
 if ~isfile(ncfile)
@@ -86,8 +86,13 @@ lift_num = sum(lift_region .* weight_3d, [1, 2], 'omitnan');
 lift_den = sum(double(~isnan(lift_region)) .* weight_3d, [1, 2], 'omitnan');
 lift_spatial_avg = squeeze(lift_num ./ lift_den);
 
-work_avg = mean(work_spatial_avg, 'omitnan');
-lift_avg = mean(lift_spatial_avg, 'omitnan');
+% Build plotting axis from NetCDF time variable (prefer datetime if units exist)
+[plot_time, plot_time_label] = build_time_axis(ncfile, time);
+
+% Time weights account for missing steps and requested schedule change.
+[time_weights_days, missing_steps] = compute_time_weights_plus4k(time, ncfile);
+work_avg = weighted_nanmean(work_spatial_avg, time_weights_days);
+lift_avg = weighted_nanmean(lift_spatial_avg, time_weights_days);
 
 % Compute lift/work ratio for each time step and for the time-mean values
 ratio_spatial_avg = lift_spatial_avg ./ work_spatial_avg;
@@ -99,17 +104,16 @@ else
     ratio_avg = lift_avg / work_avg;
 end
 
-% Build plotting axis from NetCDF time variable (prefer datetime if units exist)
-[plot_time, plot_time_label] = build_time_axis(ncfile, time);
-
 % Display results
 fprintf('\n');
 fprintf('=== RESULTS ===\n');
 fprintf('Region: Maritime Continent (15°S to 15°N, 90°E to 150°E)\n');
 fprintf('Spatial weighting: cos(latitude)\n');
+fprintf('Time weighting: schedule-aware warming (5-day then 1-day then 2-day segments)\n');
+fprintf('Detected missing timesteps: %d\n', missing_steps);
 fprintf('Number of time steps: %d\n', length(time));
-fprintf('\nMechanical Work (averaged over tropical band and time): %.6f\n', work_avg);
-fprintf('Lift Work (averaged over tropical band and time): %.6f\n', lift_avg);
+fprintf('\nMechanical Work (averaged over maritime continent with weighted time mean): %.6f\n', work_avg);
+fprintf('Lift Work (averaged over maritime continent with weighted time mean): %.6f\n', lift_avg);
 fprintf('Lift/Work ratio (time-mean values): %.6f\n', ratio_avg);
 
 % Create figure showing time series of tropical means and ratio

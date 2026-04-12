@@ -14,7 +14,7 @@ end
 addpath(fullfile(script_dir, 'lib'));
 
 % Input file
-ncfile = '/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180/work_2020010800_2021011200.nc';
+ncfile = '/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180/work_2020010300_2022011200.nc';
 
 % Check if file exists
 if ~isfile(ncfile)
@@ -78,8 +78,9 @@ lift_num = sum(lift_region .* weight_3d, [1, 2], 'omitnan');
 lift_den = sum(double(~isnan(lift_region)) .* weight_3d, [1, 2], 'omitnan');
 lift_spatial_avg = squeeze(lift_num ./ lift_den);
 
-work_avg = mean(work_spatial_avg, 'omitnan');
-lift_avg = mean(lift_spatial_avg, 'omitnan');
+[time_weights_days, missing_steps] = compute_time_weights_control(time, ncfile);
+work_avg = weighted_nanmean(work_spatial_avg, time_weights_days);
+lift_avg = weighted_nanmean(lift_spatial_avg, time_weights_days);
 
 % Compute lift/work ratio for each time step and for the time-mean values
 ratio_spatial_avg = lift_spatial_avg ./ work_spatial_avg;
@@ -99,6 +100,8 @@ fprintf('\n');
 fprintf('=== RESULTS ===\n');
 fprintf('Region: Global (all latitudes and longitudes)\n');
 fprintf('Spatial weighting: cos(latitude)\n');
+fprintf('Time weighting: schedule-aware control (5-day before 2021-05-27, 1-day on/after)\n');
+fprintf('Detected missing timesteps: %d\n', missing_steps);
 fprintf('Number of time steps: %d\n', length(time));
 fprintf('\nMechanical Work (averaged over tropical band and time): %.6f\n', work_avg);
 fprintf('Lift Work (averaged over tropical band and time): %.6f\n', lift_avg);

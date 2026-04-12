@@ -20,11 +20,12 @@ export OMP_NUM_THREADS=3
 # TARGET_DIR_HISTOGRAMS=/scratch/gpfs/STF/mbolot/results/GLOBALFV3/work_histograms
 # Paths for stellar:
 # SOURCE_ROOT=/scratch/cimes/GLOBALFV3/20191020.00Z.C3072.L79x2_pire/history
-# TARGET_DIR_COMPUTE=/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720 
-# TARGET_DIR_HISTOGRAMS=/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms
-SOURCE_ROOT=/scratch/cimes/GLOBALFV3/stellar_run/processed/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp
-TARGET_DIR_COMPUTE=/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv
-TARGET_DIR_HISTOGRAMS=/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_PLUS_4K_CO2_1270ppmv
+SOURCE_ROOT=/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire/pp
+TARGET_DIR_COMPUTE=/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720 
+TARGET_DIR_HISTOGRAMS=/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms
+# SOURCE_ROOT=/scratch/cimes/GLOBALFV3/stellar_run/processed/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp
+# TARGET_DIR_COMPUTE=/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv
+# TARGET_DIR_HISTOGRAMS=/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_PLUS_4K_CO2_1270ppmv
 
 LOG_DIR=$PROJECT_ROOT/logs
 

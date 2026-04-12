@@ -17,6 +17,7 @@ if ! type module >/dev/null 2>&1; then
   exit 1
 fi
 
+module purge
 module load intel/2021.1.2 hdf5/intel-2021.1/1.10.6 netcdf/intel-2021.1/hdf5-1.10.6/4.7.4 cdo/netcdf-4.7.4/hdf5-1.10.6/2.0.1 nco/netcdf-4.7.4/hdf5-1.10.6/5.0.3
 
 # Source folder containing histogram files named like hist_YYYYMMDDHH.nc

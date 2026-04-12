@@ -14,7 +14,7 @@ end
 addpath(fullfile(script_dir, 'lib'));
 
 % Input file
-ncfile = '/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv/work_2020010300_2021011600.nc';
+ncfile = '/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180/work_2020010300_2022011200.nc';
 
 % Check if file exists
 if ~isfile(ncfile)
@@ -33,22 +33,24 @@ catch ME
     error('Error reading dimensions: %s', ME.message);
 end
 
-% Select northern midlatitude region indices:
-% latitude: 30N to 60N, all longitudes.
-lat_idx = find(lat >= 30 & lat <= 60);
-lon_idx = 1:length(lon);
+% Select maritime continent region indices:
+% latitude: 15S to 15N, longitude: 90E to 150E.
+lat_idx = find(lat >= -15 & lat <= 15);
+lon_data = double(lon(:));
+lon_wrapped = mod(lon_data, 360);
+lon_idx = find(lon_wrapped >= 90 & lon_wrapped <= 150);
 
-if isempty(lat_idx)
-    error('No grid points found for northern midlatitude bounds.');
+if isempty(lat_idx) || isempty(lon_idx)
+    error('No grid points found for maritime continent bounds.');
 end
-fprintf('Northern midlatitudes selected: lat [%g, %g], all longitudes\n', ...
-    min(lat(lat_idx)), max(lat(lat_idx)));
+fprintf('Maritime continent region selected: lat [%g, %g], lon [%g, %g] (degrees east)\n', ...
+    min(lat(lat_idx)), max(lat(lat_idx)), min(lon_wrapped(lon_idx)), max(lon_wrapped(lon_idx)));
 
 % Latitude weights for area-weighted averaging on a lat-lon grid
 lat_selected = double(lat(lat_idx));
 lat_weights = cosd(lat_selected(:));
 if all(lat_weights == 0)
-    error('Latitude weights are all zero in the selected northern midlatitude region.');
+    error('Latitude weights are all zero in the selected maritime continent region.');
 end
 
 % Read mechanical work variable
@@ -84,12 +86,7 @@ lift_num = sum(lift_region .* weight_3d, [1, 2], 'omitnan');
 lift_den = sum(double(~isnan(lift_region)) .* weight_3d, [1, 2], 'omitnan');
 lift_spatial_avg = squeeze(lift_num ./ lift_den);
 
-% Build plotting axis from NetCDF time variable (prefer datetime if units exist)
-[plot_time, plot_time_label] = build_time_axis(ncfile, time);
-
-% Time weights account for missing steps and schedule change:
-% 5-day cadence before 2020-05-12, 1-day cadence on/after 2020-05-12.
-[time_weights_days, missing_steps] = compute_time_weights_plus4k(time, ncfile);
+[time_weights_days, missing_steps] = compute_time_weights_control(time, ncfile);
 work_avg = weighted_nanmean(work_spatial_avg, time_weights_days);
 lift_avg = weighted_nanmean(lift_spatial_avg, time_weights_days);
 
@@ -103,16 +100,19 @@ else
     ratio_avg = lift_avg / work_avg;
 end
 
+% Build plotting axis from NetCDF time variable (prefer datetime if units exist)
+[plot_time, plot_time_label] = build_time_axis(ncfile, time);
+
 % Display results
 fprintf('\n');
 fprintf('=== RESULTS ===\n');
-fprintf('Region: Northern Midlatitudes (30°N to 60°N, all longitudes)\n');
+fprintf('Region: Maritime Continent (15°S to 15°N, 90°E to 150°E)\n');
 fprintf('Spatial weighting: cos(latitude)\n');
-fprintf('Time weighting: schedule-aware (5-day before 2020-05-12, 1-day on/after)\n');
+fprintf('Time weighting: schedule-aware control (5-day before 2021-05-27, 1-day on/after)\n');
 fprintf('Detected missing timesteps: %d\n', missing_steps);
 fprintf('Number of time steps: %d\n', length(time));
-fprintf('\nMechanical Work (averaged over northern midlatitudes with weighted time mean): %.6f\n', work_avg);
-fprintf('Lift Work (averaged over northern midlatitudes with weighted time mean): %.6f\n', lift_avg);
+fprintf('\nMechanical Work (averaged over tropical band and time): %.6f\n', work_avg);
+fprintf('Lift Work (averaged over tropical band and time): %.6f\n', lift_avg);
 fprintf('Lift/Work ratio (time-mean values): %.6f\n', ratio_avg);
 
 % Create figure showing time series of tropical means and ratio
@@ -120,17 +120,17 @@ figure('Position', [100, 100, 1000, 600]);
 
 subplot(3, 1, 1);
 plot(plot_time, work_spatial_avg, 'b-', 'LineWidth', 1.5);
-xlabel(plot_time_label); ylabel('Work'); title('Mechanical Work - Northern Midlatitudes Average Time Series');
+xlabel(plot_time_label); ylabel('Work'); title('Mechanical Work - Maritime Continent Average Time Series');
 grid on;
 
 subplot(3, 1, 2);
 plot(plot_time, lift_spatial_avg, 'r-', 'LineWidth', 1.5);
-xlabel(plot_time_label); ylabel('Lift'); title('Lift Work - Northern Midlatitudes Average Time Series');
+xlabel(plot_time_label); ylabel('Lift'); title('Lift Work - Maritime Continent Average Time Series');
 grid on;
 
 subplot(3, 1, 3);
 plot(plot_time, ratio_spatial_avg, 'k-', 'LineWidth', 1.5);
-xlabel(plot_time_label); ylabel('Lift/Work'); title('Lift/Work Ratio - Northern Midlatitudes Average Time Series');
+xlabel(plot_time_label); ylabel('Lift/Work'); title('Lift/Work Ratio - Maritime Continent Average Time Series');
 ylim([0 1])
 grid on;
 

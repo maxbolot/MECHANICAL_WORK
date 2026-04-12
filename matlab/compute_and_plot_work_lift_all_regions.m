@@ -14,8 +14,8 @@ end
 addpath(fullfile(script_dir, 'lib'));
 
 % Input files
-control_file = '/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180/work_2020010800_2021011200.nc';
-warming_file = '/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv/work_2020010300_2021011600.nc';
+control_file = '/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180/work_2020010300_2022011200.nc';
+warming_file = '/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv/work_2020010300_2022012000.nc';
 
 if ~isfile(control_file)
     error('Control file not found: %s', control_file);
@@ -32,10 +32,10 @@ regions = {
 };
 
 fprintf('Reading control simulation: %s\n', control_file);
-control = process_file(control_file, regions, false);
+control = process_file(control_file, regions, 'control');
 
 fprintf('Reading warming simulation: %s\n', warming_file);
-warming = process_file(warming_file, regions, true);
+warming = process_file(warming_file, regions, 'warming');
 
 % Build stacked-bar input [lift, ke] in legacy row order:
 % [control zone1; warming zone1; control zone2; warming zone2; ...]
@@ -52,6 +52,7 @@ newY([1 2 4 5 7 8 10 11], :) = Y;
 %% Plot (legacy axis-1 style)
 fig = figure('units', 'inch', 'position', [0, 0, 8, 3.8]);
 set(gcf, 'color', 'w');
+set(gcf, 'WindowStyle', 'docked');
 
 ax1 = axes(fig);
 set(ax1, 'FontSize', 13);
@@ -91,7 +92,7 @@ for i = 1:4
 end
 
 
-function out = process_file(ncfile, regions, use_schedule_weights)
+function out = process_file(ncfile, regions, simulation_name)
     lat = double(ncread(ncfile, 'lat'));
     lon = double(ncread(ncfile, 'lon'));
     time = double(ncread(ncfile, 'time'));
@@ -102,12 +103,12 @@ function out = process_file(ncfile, regions, use_schedule_weights)
     fprintf('  %s work dims interpreted as [lon, lat, time] from source dims [%s]\n', ...
         ncfile, strjoin(dim_names, ', '));
 
-    if use_schedule_weights
+    if strcmpi(simulation_name, 'warming')
         [time_weights_days, missing_steps] = compute_time_weights_plus4k(time, ncfile);
+    elseif strcmpi(simulation_name, 'control')
+        [time_weights_days, missing_steps] = compute_time_weights_control(time, ncfile);
     else
-        % Control simulation: uniform weighting over available timesteps.
-        time_weights_days = ones(numel(time), 1);
-        missing_steps = 0;
+        error('Unknown simulation name: %s', simulation_name);
     end
 
     nreg = numel(regions);

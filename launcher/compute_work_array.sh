@@ -16,6 +16,7 @@ SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 
 NTASKS=${NTASKS:-1}
 CPUS_PER_TASK=${CPUS_PER_TASK:-1}
+MEM_PER_CPU=${MEM_PER_CPU:-3G}
 LOG_DIR=${LOG_DIR:-$PROJECT_ROOT/logs}
 
 # Launch mode (no SLURM_ARRAY_TASK_ID): read date list and submit this script as a job array.
@@ -35,10 +36,10 @@ if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     fi
 
     echo "Submitting job array with $n_tasks tasks using dates from $LIST_FILE"
-    echo "Resources per array task: ntasks=$NTASKS, cpus-per-task=$CPUS_PER_TASK"
-    sbatch --array=1-"$n_tasks" --ntasks="$NTASKS" --cpus-per-task="$CPUS_PER_TASK" \
+    echo "Resources per array task: ntasks=$NTASKS, cpus-per-task=$CPUS_PER_TASK, mem-per-cpu=$MEM_PER_CPU"
+    sbatch --array=1-"$n_tasks" --ntasks="$NTASKS" --cpus-per-task="$CPUS_PER_TASK" --mem-per-cpu="$MEM_PER_CPU" \
             --output="$LOG_DIR/compute_work_%A_%a.out" --error="$LOG_DIR/compute_work_%A_%a.err" \
-            --export=ALL,PROJECT_ROOT="$PROJECT_ROOT",LIST_FILE="$LIST_FILE",NTASKS="$NTASKS",CPUS_PER_TASK="$CPUS_PER_TASK",LOG_DIR="$LOG_DIR" "$SCRIPT_PATH"
+            --export=ALL,PROJECT_ROOT="$PROJECT_ROOT",LIST_FILE="$LIST_FILE",NTASKS="$NTASKS",CPUS_PER_TASK="$CPUS_PER_TASK",MEM_PER_CPU="$MEM_PER_CPU",LOG_DIR="$LOG_DIR" "$SCRIPT_PATH"
     exit $?
 fi
 
@@ -53,12 +54,14 @@ module purge || true
 module load intel-oneapi/2024.2 hdf5/oneapi-2024.2/1.14.4 netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2
 
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK:-$CPUS_PER_TASK}
-# source_dir=/scratch/cimes/GLOBALFV3/20191020.00Z.C3072.L79x2_pire/history/$date
-# target_dir_compute=/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720
-# target_dir_histograms=/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms
-source_dir=/scratch/cimes/GLOBALFV3/stellar_run/processed/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp/$date
-target_dir_compute=/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv
-target_dir_histograms=/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_PLUS_4K_CO2_1270ppmv
+source_dir=/scratch/cimes/GLOBALFV3/20191020.00Z.C3072.L79x2_pire/history/$date
+# source_dir=/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire/pp/$date
+target_dir_compute=/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720
+target_dir_histograms=/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms
+# source_dir=/scratch/cimes/GLOBALFV3/stellar_run/processed/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp/$date
+# source_dir=/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp/$date
+# target_dir_compute=/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv
+# target_dir_histograms=/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_PLUS_4K_CO2_1270ppmv
 
 # Prefer local/bin build output, fallback to legacy bin path.
 COMPUTE_WORK_BIN=${COMPUTE_WORK_BIN:-$PROJECT_ROOT/local/bin/compute_work_async}
