@@ -52,17 +52,18 @@ program compute_work
     double precision, dimension(:), allocatable :: lon                     ! longitude
     double precision, dimension(:), allocatable :: lat                     ! latitude
     double precision, dimension(:), allocatable :: time_vals               ! time coordinate values
+    double precision, dimension(:), allocatable :: day_time_vals           ! representative time value for each aggregated day
     double precision, dimension(:,:), allocatable :: cell_area             ! grid-cell area (nx x ny)
     double precision, dimension(:), allocatable :: pr_edges                ! precipitation histogram edges
     double precision, dimension(:), allocatable :: work_edges              ! work histogram edges
     double precision, dimension(:,:,:,:), allocatable :: pr_buffer         ! precipitation rate
     double precision, dimension(:,:,:,:), allocatable :: work_out_buffer   ! mechanical work (output buffer)
     double precision, dimension(:,:,:,:), allocatable :: lift_out_buffer   ! mechanical work to lift water (output buffer)
-    double precision, dimension(:,:), allocatable :: work_accum_full       ! full-grid time-mean work output
-    double precision, dimension(:,:), allocatable :: lift_accum_full       ! full-grid time-mean lift output
-    double precision, dimension(:), allocatable :: hist_area_out           ! histogram output (area-weighted)
-    double precision, dimension(:,:), allocatable :: hist2d_work_out       ! 2D histogram output (area-weighted)
-    double precision, dimension(:,:), allocatable :: hist2d_lift_out       ! 2D histogram output (area-weighted)
+    double precision, dimension(:,:,:), allocatable :: work_accum_full     ! full-grid time accumulation of work
+    double precision, dimension(:,:,:), allocatable :: lift_accum_full     ! full-grid time accumulation of lift
+    double precision, dimension(:,:), allocatable :: hist_area_out         ! histogram output (area-weighted, by time)
+    double precision, dimension(:,:,:), allocatable :: hist2d_work_out     ! 2D histogram output (area-weighted, by time)
+    double precision, dimension(:,:,:), allocatable :: hist2d_lift_out     ! 2D histogram output (area-weighted, by time)
     double precision, dimension(:), allocatable :: hist_area_chunk         ! per-chunk area histogram
     double precision, dimension(:,:), allocatable :: hist2d_work_chunk     ! per-chunk work histogram
     double precision, dimension(:,:), allocatable :: hist2d_lift_chunk     ! per-chunk lift histogram
@@ -72,7 +73,12 @@ program compute_work
     double precision :: work_acc, lift_acc
     double precision :: pr_log_step
     integer :: nx, ny, nplev, nt                 ! note: nplev is full levels
-    integer :: t, p, y, x, yc, nchunks, ystart, iedge
+    integer :: ndays
+    integer :: t, p, y, x, yc, nchunks, ystart, iedge, iday
+    integer, dimension(:), allocatable :: day_index_of_t
+    integer, dimension(:), allocatable :: day_first_idx
+    integer, dimension(:), allocatable :: day_step_count
+    double precision :: day_norm
     ! Global clipped-domain index bounds used only for histogram accumulation.
     integer :: lat_clip_start, lat_clip_end, lon_clip_start, lon_clip_end
     ! Overlap between clipped latitude range and current chunk.
@@ -154,16 +160,16 @@ program compute_work
     allocate(pr_buffer(nx, chunk_size, 1, nbuf))
     allocate(work_out_buffer(nx, chunk_size, 1, nbuf))
     allocate(lift_out_buffer(nx, chunk_size, 1, nbuf))
-    allocate(hist_area_out(npr_edges - 1))
-    allocate(hist2d_work_out(npr_edges - 1, nwork_edges - 1))
-    allocate(hist2d_lift_out(npr_edges - 1, nwork_edges - 1))
+    allocate(hist_area_out(npr_edges - 1, nt))
+    allocate(hist2d_work_out(npr_edges - 1, nwork_edges - 1, nt))
+    allocate(hist2d_lift_out(npr_edges - 1, nwork_edges - 1, nt))
 
     hist_area_out = 0.0d0
     hist2d_work_out = 0.0d0
     hist2d_lift_out = 0.0d0
 
-    allocate(work_accum_full(nx, ny))
-    allocate(lift_accum_full(nx, ny))
+    allocate(work_accum_full(nx, ny, nt))
+    allocate(lift_accum_full(nx, ny, nt))
     work_accum_full = 0.0d0
     lift_accum_full = 0.0d0
 
@@ -186,6 +192,14 @@ program compute_work
         ncstatus = nf90_get_att(ncid_temp, varid_time, "calendar", time_calendar)
         if (ncstatus /= nf90_noerr) time_calendar = "standard"
     end if
+    ! Convert native model timesteps into contiguous day bins so outputs are
+    ! aggregated by day (not by raw input timestep index).
+    call build_day_groups(time_vals, time_units, day_index_of_t, day_first_idx, day_time_vals, ndays)
+    allocate(day_step_count(ndays))
+    day_step_count = 0
+    do t = 1, nt
+        day_step_count(day_index_of_t(t)) = day_step_count(day_index_of_t(t)) + 1
+    end do
     call compute_cell_areas(lon, lat, cell_area)
 
     ! Resolve longitude clipping indices on the model grid.
@@ -242,9 +256,12 @@ program compute_work
     ! create work output file
     call check(nf90_create(trim(adjustl(path_work_out)), nf90_clobber, ncid_work_out))
     call check(nf90_put_att(ncid_work_out, nf90_global, "Conventions", "CF-1.8"))
+    call check(nf90_put_att(ncid_work_out, nf90_global, "daily_stat", "mean"))
+    call check(nf90_put_att(ncid_work_out, nf90_global, "daily_aggregation", "mean over native timesteps within each day"))
     call check(nf90_def_dim(ncid_work_out, "lon", nx, dimid_out_lon))
     call check(nf90_def_dim(ncid_work_out, "lat", ny, dimid_out_lat))
-    call check(nf90_def_dim(ncid_work_out, "time", 1, dimid_out_time))
+    ! Output time axis is daily, with one representative timestamp per day.
+    call check(nf90_def_dim(ncid_work_out, "time", ndays, dimid_out_time))
     call check(nf90_def_var(ncid_work_out, "lon", nf90_double, (/dimid_out_lon/), varid_out_lon))
     call check(nf90_put_att(ncid_work_out, varid_out_lon, "long_name", "longitude"))
     call check(nf90_put_att(ncid_work_out, varid_out_lon, "standard_name", "longitude"))
@@ -265,14 +282,18 @@ program compute_work
     call check(nf90_put_att(ncid_work_out, varid_work_out, "long_name", "work"))
     call check(nf90_put_att(ncid_work_out, varid_work_out, "units", "Watts per square meter"))
     call check(nf90_put_att(ncid_work_out, varid_work_out, "coordinates", "lon lat"))
+    call check(nf90_put_att(ncid_work_out, varid_work_out, "time_stat", "daily_mean"))
+    call check(nf90_put_att(ncid_work_out, varid_work_out, "time_aggregation", "mean over native timesteps within each day"))
     call check(nf90_def_var(ncid_work_out, "lift", nf90_double, (/dimid_out_lon, dimid_out_lat, dimid_out_time/), varid_lift_out))
     call check(nf90_put_att(ncid_work_out, varid_lift_out, "long_name", "lift work"))
     call check(nf90_put_att(ncid_work_out, varid_lift_out, "units", "Watts per square meter"))
     call check(nf90_put_att(ncid_work_out, varid_lift_out, "coordinates", "lon lat"))
+    call check(nf90_put_att(ncid_work_out, varid_lift_out, "time_stat", "daily_mean"))
+    call check(nf90_put_att(ncid_work_out, varid_lift_out, "time_aggregation", "mean over native timesteps within each day"))
     call check(nf90_enddef(ncid_work_out))
     call check(nf90_put_var(ncid_work_out, varid_out_lon, lon))
     call check(nf90_put_var(ncid_work_out, varid_out_lat, lat))
-    call check(nf90_put_var(ncid_work_out, varid_out_time, (/time_vals((nt+1)/2)/)))
+    call check(nf90_put_var(ncid_work_out, varid_out_time, day_time_vals))
 
     ! populate variable IDs for input files
     call check(nf90_inq_varid(ncid_temp, "temp_coarse", varid_temp))
@@ -331,6 +352,8 @@ program compute_work
 
     do t = 1, nt
         print *, 'timestep', t, 'of', nt
+        ! Map this timestep to its daily accumulation slot.
+        iday = day_index_of_t(t)
 
         ! Reset buffer metadata for this timestep.
         buf_state   = 0
@@ -397,7 +420,7 @@ program compute_work
             ! depend(in: fetch_ready(ibuf)) also creates an anti-dependency so
             ! that the *next* read task targeting the same ibuf cannot start
             ! until this compute task completes, preventing buffer corruption.
-            !$omp task depend(in: fetch_ready(ibuf)) firstprivate(ibuf, ystart) &
+            !$omp task depend(in: fetch_ready(ibuf)) firstprivate(ibuf, ystart, t, iday) &
             !$omp&    private(y,x,p,geometric_thickness,work_acc,lift_acc, &
             !$omp&            hist_area_chunk,hist2d_work_chunk,hist2d_lift_chunk, &
             !$omp&            hist_y_start,hist_y_end,y_local_start,y_local_end)
@@ -437,19 +460,19 @@ program compute_work
             end if
 
             !$omp critical(histogram_accumulation)
-            if (allocated(hist_area_chunk))    hist_area_out    = hist_area_out    + hist_area_chunk
-            if (allocated(hist2d_work_chunk))  hist2d_work_out  = hist2d_work_out  + hist2d_work_chunk
-            if (allocated(hist2d_lift_chunk))  hist2d_lift_out  = hist2d_lift_out  + hist2d_lift_chunk
+            if (allocated(hist_area_chunk))    hist_area_out(:,iday)    = hist_area_out(:,iday)    + hist_area_chunk
+            if (allocated(hist2d_work_chunk))  hist2d_work_out(:,:,iday)= hist2d_work_out(:,:,iday)+ hist2d_work_chunk
+            if (allocated(hist2d_lift_chunk))  hist2d_lift_out(:,:,iday)= hist2d_lift_out(:,:,iday)+ hist2d_lift_chunk
             !$omp end critical(histogram_accumulation)
 
             if (allocated(hist_area_chunk))   deallocate(hist_area_chunk)
             if (allocated(hist2d_work_chunk)) deallocate(hist2d_work_chunk)
             if (allocated(hist2d_lift_chunk)) deallocate(hist2d_lift_chunk)
 
-            ! Accumulate work/lift into full-grid time-mean arrays.
-            ! Within one timestep each chunk has a unique ystart, so no race.
-            work_accum_full(:, ystart:ystart+chunk_size-1) = work_accum_full(:, ystart:ystart+chunk_size-1) + work_out_buffer(:,:,1,ibuf)
-            lift_accum_full(:, ystart:ystart+chunk_size-1) = lift_accum_full(:, ystart:ystart+chunk_size-1) + lift_out_buffer(:,:,1,ibuf)
+            ! Accumulate into daily bins. Multiple timesteps in the same day
+            ! are summed into the same iday slice.
+            work_accum_full(:, ystart:ystart+chunk_size-1, iday) = work_accum_full(:, ystart:ystart+chunk_size-1, iday) + work_out_buffer(:,:,1,ibuf)
+            lift_accum_full(:, ystart:ystart+chunk_size-1, iday) = lift_accum_full(:, ystart:ystart+chunk_size-1, iday) + lift_out_buffer(:,:,1,ibuf)
 
             ! Signal that this buffer is ready to be written.
             !$omp atomic write
@@ -472,11 +495,20 @@ program compute_work
     !$omp end master
     !$omp end parallel
 
-    ! Divide accumulated work/lift by nt to obtain time mean, then write.
-    work_accum_full = work_accum_full / dble(nt)
-    lift_accum_full = lift_accum_full / dble(nt)
-    call check(nf90_put_var(ncid_work_out, varid_work_out, work_accum_full, start=(/1,1,1/), count=(/nx,ny,1/)))
-    call check(nf90_put_var(ncid_work_out, varid_lift_out, lift_accum_full, start=(/1,1,1/), count=(/nx,ny,1/)))
+    ! Convert accumulated daily sums to daily means.
+    do iday = 1, ndays
+        if (day_step_count(iday) > 0) then
+            day_norm = 1.0d0 / dble(day_step_count(iday))
+            work_accum_full(:,:,iday) = work_accum_full(:,:,iday) * day_norm
+            lift_accum_full(:,:,iday) = lift_accum_full(:,:,iday) * day_norm
+            hist_area_out(:,iday) = hist_area_out(:,iday) * day_norm
+            hist2d_work_out(:,:,iday) = hist2d_work_out(:,:,iday) * day_norm
+            hist2d_lift_out(:,:,iday) = hist2d_lift_out(:,:,iday) * day_norm
+        end if
+    end do
+
+    call check(nf90_put_var(ncid_work_out, varid_work_out, work_accum_full(:,:,1:ndays), start=(/1,1,1/), count=(/nx,ny,ndays/)))
+    call check(nf90_put_var(ncid_work_out, varid_lift_out, lift_accum_full(:,:,1:ndays), start=(/1,1,1/), count=(/nx,ny,ndays/)))
 
     call check(nf90_close(ncid_dz))
     call check(nf90_close(ncid_temp))
@@ -502,7 +534,7 @@ program compute_work
     call check(nf90_def_dim(ncid_hist_out, "nbin_work", nwork_edges - 1, dimid_nbin_work))
     call check(nf90_def_dim(ncid_hist_out, "nedges_pr", npr_edges, dimid_nedges_pr))
     call check(nf90_def_dim(ncid_hist_out, "nedges_work", nwork_edges, dimid_nedges_work))
-    call check(nf90_def_dim(ncid_hist_out, "time", 1, dimid_hist_time))
+    call check(nf90_def_dim(ncid_hist_out, "time", ndays, dimid_hist_time))
     call check(nf90_def_var(ncid_hist_out, "time", nf90_double, (/dimid_hist_time/), varid_hist_time))
     call check(nf90_put_att(ncid_hist_out, varid_hist_time, "long_name", "time"))
     call check(nf90_put_att(ncid_hist_out, varid_hist_time, "standard_name", "time"))
@@ -512,19 +544,100 @@ program compute_work
     call check(nf90_def_var(ncid_hist_out, "hist_area", nf90_double, (/dimid_nbin_pr, dimid_hist_time/), varid_hist_area))
     call check(nf90_def_var(ncid_hist_out, "hist2d_work", nf90_double, (/dimid_nbin_pr, dimid_nbin_work, dimid_hist_time/), varid_hist2d_work))
     call check(nf90_def_var(ncid_hist_out, "hist2d_lift", nf90_double, (/dimid_nbin_pr, dimid_nbin_work, dimid_hist_time/), varid_hist2d_lift))
+    call check(nf90_put_att(ncid_hist_out, varid_hist_area, "time_stat", "daily_mean"))
+    call check(nf90_put_att(ncid_hist_out, varid_hist_area, "time_aggregation", "mean over native timesteps within each day"))
+    call check(nf90_put_att(ncid_hist_out, varid_hist2d_work, "time_stat", "daily_mean"))
+    call check(nf90_put_att(ncid_hist_out, varid_hist2d_work, "time_aggregation", "mean over native timesteps within each day"))
+    call check(nf90_put_att(ncid_hist_out, varid_hist2d_lift, "time_stat", "daily_mean"))
+    call check(nf90_put_att(ncid_hist_out, varid_hist2d_lift, "time_aggregation", "mean over native timesteps within each day"))
     call check(nf90_def_var(ncid_hist_out, "pr_edges", nf90_double, (/dimid_nedges_pr/), varid_pr_edges))
     call check(nf90_def_var(ncid_hist_out, "work_edges", nf90_double, (/dimid_nedges_work/), varid_work_edges))
+    call check(nf90_put_att(ncid_hist_out, nf90_global, "daily_stat", "mean"))
+    call check(nf90_put_att(ncid_hist_out, nf90_global, "daily_aggregation", "mean over native timesteps within each day"))
     call check(nf90_put_att(ncid_hist_out, nf90_global, "clip_lon_west", lon(lon_clip_start)))
     call check(nf90_put_att(ncid_hist_out, nf90_global, "clip_lon_east", lon(lon_clip_end)))
     call check(nf90_put_att(ncid_hist_out, nf90_global, "clip_lat_south", lat(lat_clip_start)))
     call check(nf90_put_att(ncid_hist_out, nf90_global, "clip_lat_north", lat(lat_clip_end)))
     call check(nf90_enddef(ncid_hist_out))
-    call check(nf90_put_var(ncid_hist_out, varid_hist_time, (/time_vals((nt+1)/2)/)))
-    call check(nf90_put_var(ncid_hist_out, varid_hist_area, hist_area_out, start=(/1,1/), count=(/npr_edges - 1,1/)))
-    call check(nf90_put_var(ncid_hist_out, varid_hist2d_work, hist2d_work_out, start=(/1,1,1/), count=(/npr_edges - 1,nwork_edges - 1,1/)))
-    call check(nf90_put_var(ncid_hist_out, varid_hist2d_lift, hist2d_lift_out, start=(/1,1,1/), count=(/npr_edges - 1,nwork_edges - 1,1/)))
+    call check(nf90_put_var(ncid_hist_out, varid_hist_time, day_time_vals))
+    call check(nf90_put_var(ncid_hist_out, varid_hist_area, hist_area_out(:,1:ndays), start=(/1,1/), count=(/npr_edges - 1,ndays/)))
+    call check(nf90_put_var(ncid_hist_out, varid_hist2d_work, hist2d_work_out(:,:,1:ndays), start=(/1,1,1/), count=(/npr_edges - 1,nwork_edges - 1,ndays/)))
+    call check(nf90_put_var(ncid_hist_out, varid_hist2d_lift, hist2d_lift_out(:,:,1:ndays), start=(/1,1,1/), count=(/npr_edges - 1,nwork_edges - 1,ndays/)))
     call check(nf90_put_var(ncid_hist_out, varid_pr_edges, pr_edges))
     call check(nf90_put_var(ncid_hist_out, varid_work_edges, work_edges))
     call check(nf90_close(ncid_hist_out))
+
+contains
+
+    ! Build day grouping metadata from raw time values.
+    ! day_of_t(i) gives the daily index for timestep i,
+    ! and day_times(k) stores the first timestamp encountered for day k.
+    subroutine build_day_groups(time_in, units, day_of_t, day_first, day_times, ndays)
+        real(8), intent(in) :: time_in(:)
+        character(len=*), intent(in) :: units
+        integer, allocatable, intent(out) :: day_of_t(:), day_first(:)
+        real(8), allocatable, intent(out) :: day_times(:)
+        integer, intent(out) :: ndays
+
+        integer :: i
+        integer, allocatable :: day_key(:)
+        real(8) :: scale_to_days
+
+        ! Convert native time units to days before integer day bucketing.
+        scale_to_days = units_to_days(units)
+        allocate(day_key(size(time_in)))
+        do i = 1, size(time_in)
+            day_key(i) = floor(time_in(i) * scale_to_days + 1.0d-9)
+        end do
+
+        ndays = 1
+        do i = 2, size(day_key)
+            if (day_key(i) /= day_key(i-1)) ndays = ndays + 1
+        end do
+
+        allocate(day_of_t(size(time_in)))
+        allocate(day_first(ndays))
+        allocate(day_times(ndays))
+
+        ndays = 1
+        day_of_t(1) = 1
+        day_first(1) = 1
+        day_times(1) = time_in(1)
+        do i = 2, size(day_key)
+            if (day_key(i) /= day_key(i-1)) then
+                ndays = ndays + 1
+                day_first(ndays) = i
+                day_times(ndays) = time_in(i)
+            end if
+            day_of_t(i) = ndays
+        end do
+    end subroutine build_day_groups
+
+    ! Return multiplicative factor that converts values in `units` to days.
+    ! Unknown prefixes default to 1 (already in days).
+    real(8) function units_to_days(units)
+        character(len=*), intent(in) :: units
+        character(len=255) :: lower
+        integer :: i, n
+
+        lower = ''
+        n = len_trim(units)
+        do i = 1, n
+            if (units(i:i) >= 'A' .and. units(i:i) <= 'Z') then
+                lower(i:i) = achar(iachar(units(i:i)) + 32)
+            else
+                lower(i:i) = units(i:i)
+            end if
+        end do
+
+        units_to_days = 1.0d0
+        if (index(lower, 'hour') == 1) then
+            units_to_days = 1.0d0 / 24.0d0
+        else if (index(lower, 'minute') == 1) then
+            units_to_days = 1.0d0 / 1440.0d0
+        else if (index(lower, 'second') == 1) then
+            units_to_days = 1.0d0 / 86400.0d0
+        end if
+    end function units_to_days
 
 end program compute_work

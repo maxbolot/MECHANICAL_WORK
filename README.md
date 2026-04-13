@@ -14,14 +14,20 @@ The project is organized as a pipeline:
 - `local/`
   - `src/compute_work.f90`: baseline Fortran implementation.
   - `src/compute_work_async.f90`: async/pipelined Fortran implementation (current default binary in launchers).
+  - `src/compute_prate_thresholds.f90`: two-pass precipitation-threshold generator.
+  - `src/compute_work_async_prate_threshold.f90`: async work/lift fork with precipitation-threshold masking.
   - `Makefile`: build rules for both binaries.
   - `bin/`: compiled executables.
   - `obj/`: object files.
 - `launcher/`
-  - `compute_work_array.sh`: Slurm array launcher (one date per task).
-  - `compute_work_array_inner_parallel.sh`: Slurm array launcher with multiple inner jobs per array task.
-  - `compute_work_noslurm.sh`: serial fallback runner.
-  - `list.txt`: date list used by launchers.
+  - `compute_work_async_array.sh`: Slurm array launcher using simulation-aware part1/part2 date lists.
+  - `compute_work_async_array_inner_parallel.sh`: Slurm array launcher with multiple inner jobs per array task.
+  - `compute_work_async_noslurm.sh`: serial fallback runner using simulation-aware part1/part2 date lists.
+  - `compute_work_async_test_noslurm.sh`: simple one-date test launcher with one hardcoded source root.
+  - `compute_prate_threshold_noslurm.sh`: serial launcher for percentile threshold generation.
+  - `compute_work_async_prate_threshold_array.sh`: Slurm array launcher for thresholded async work/lift.
+  - `compute_work_async_prate_threshold_noslurm.sh`: serial launcher for thresholded async work/lift.
+  - `list/`: simulation-specific date lists for part1/part2 source roots.
 - `script/`
   - `repair_work_time_axis.sh`: detects and repairs inconsistent time coordinates in per-date work files.
   - `coarse_grain_and_concat_work.sh`: remaps per-date files to a target grid, then concatenates.
@@ -35,14 +41,58 @@ The project is organized as a pipeline:
 
 ## Low-Level Fortran Logic
 
+### Precipitation Threshold Generator: `compute_prate_thresholds.f90`
+
+This program builds precipitation percentile thresholds from PRATE files in two passes.
+
+- Inputs are read from namelist:
+  - `history_root_part1`, `date_list_file_part1`
+  - `history_root_part2`, `date_list_file_part2`
+  - `output_file`
+- Pass 1:
+  - Parses all `PRATEsfc_coarse_C3072_1440x720.fre.nc` files listed across both list files.
+  - Accumulates area-weighted histogram using `bin_sumarea` from `libhist`.
+  - Applies clipped-domain histogram accumulation with hard bounds:
+    - latitude: `-30` to `30`
+    - longitude: `0` to `360`
+- Pass 2:
+  - Builds normalized CDF from the accumulated histogram.
+  - Computes inverse-CDF precipitation thresholds for requested percentiles using log-log interpolation via `interp1` from `libinterp`.
+- Output:
+  - ASCII thresholds file.
+  - Default launcher paths are simulation-specific:
+    - control: `output/thresholds/thresholds_control.txt`
+    - warming: `output/thresholds/thresholds_warming.txt`
+
+### Thresholded Async Work/Lift Fork: `compute_work_async_prate_threshold.f90`
+
+This fork preserves async task-pipelined I/O/compute from `compute_work_async.f90` and applies precipitation-threshold masking.
+
+- Reads percentile thresholds from ASCII (`path_thresholds` namelist item).
+- Computes work/lift, then applies `PRATE >= threshold` for each percentile.
+- Stores zero where threshold is not met.
+- Removes histogram outputs/logic from this fork.
+- Aggregates native timesteps into daily bins and writes daily means (not daily sums).
+- Writes NetCDF `work` and `lift` with leading `percentile` dimension.
+- Adds traceability global attributes such as `p99_threshold` and `threshold_file`.
+- Adds aggregation metadata:
+  - global: `daily_stat=mean`, `daily_aggregation="mean over native timesteps within each day"`
+  - variable: `time_stat=daily_mean`, `time_aggregation="mean over native timesteps within each day"` on `work` and `lift`
+
 ### Inputs and Outputs
 
-Both Fortran programs read a namelist (`&config`) specifying paths to all required coarse variables (thermodynamic tendencies, hydrometeors, precipitation, etc.) and write:
+The work kernels read a namelist (`&config`) specifying paths to all required coarse variables (thermodynamic tendencies, hydrometeors, precipitation, etc.) and write:
 
 - A work file with variables:
   - `work` (W m^-2)
   - `lift` (W m^-2)
 - A histogram file containing precipitation/work binned diagnostics.
+
+Time aggregation behavior for all `compute_work*.f90` kernels:
+
+- Native model timesteps are grouped into contiguous day bins from the input time axis.
+- Per-day outputs are normalized by the number of timesteps in each day.
+- NetCDF outputs therefore store daily means.
 
 Each run processes one date directory and writes one `work_YYYYMMDDHH.nc` and one `hist_YYYYMMDDHH.nc`.
 
@@ -52,11 +102,12 @@ Core characteristics:
 
 - Uses OpenMP and NetCDF Fortran APIs.
 - Processes the horizontal domain in y-chunks (`chunk_size = 144`) with two buffers (`nbuf = 2`).
-- Computes full-grid time-mean work/lift products and selected histogram diagnostics.
+- Computes daily-mean full-grid work/lift products and selected daily-mean histogram diagnostics.
 - Applies clipped-domain bounds for histogram accumulation (currently hardcoded in code):
   - latitude: -30 to 30
   - longitude: 0 to 360
 - Writes CF-style coordinate metadata and carries through input time metadata when available.
+- Writes explicit daily-aggregation metadata in NetCDF attributes (global and per-variable).
 
 ### Async Kernel: `compute_work_async.f90`
 
@@ -86,43 +137,108 @@ Targets:
 
 - `bin/compute_work`
 - `bin/compute_work_async`
+- `bin/compute_prate_thresholds`
+- `bin/compute_work_async_prate_threshold`
 
 ## Launch Layer (Date-Oriented Execution)
 
-### `launcher/compute_work_array.sh`
+### `launcher/compute_work_async_array.sh`
 
 Primary Slurm array driver:
 
-- Reads one date per line from `launcher/list.txt` (or `LIST_FILE`).
+- Uses `SIMULATION=${SIMULATION:-control}` to choose between control and warming inputs.
+- Reads dates from two simulation-specific list files:
+  - `LIST_FILE_PART1`
+  - `LIST_FILE_PART2`
+- Maps each list to its matching source root:
+  - `SOURCE_ROOT_PART1`
+  - `SOURCE_ROOT_PART2`
 - Submits itself as an array (`--array=1-N`).
 - For each task:
-  - selects one date
+  - selects one date from the combined part1+part2 task list
+  - resolves the matching source root for that date
   - writes a temporary namelist
   - runs compute binary
   - removes temporary namelist
 
 Key environment knobs:
 
+- `SIMULATION` (`control` or `warming`)
 - `NTASKS`
 - `CPUS_PER_TASK`
 - `MEM_PER_CPU` (default `3G`)
 - `LOG_DIR`
 
-### `launcher/compute_work_array_inner_parallel.sh`
+### `launcher/compute_work_async_array_inner_parallel.sh`
 
 Array launcher with inner concurrency:
 
+- Uses the same `SIMULATION` selector and combined part1/part2 list logic as `compute_work_async_array.sh`.
 - One array task can run multiple dates concurrently (`INNER_PARALLEL`).
 - Splits available CPU threads across inner jobs by setting `OMP_NUM_THREADS` per instance.
 - Produces per-date logs for easier failure isolation.
 
-### `launcher/compute_work_noslurm.sh`
+### `launcher/compute_work_async_noslurm.sh`
 
 Serial fallback for non-Slurm environments:
 
-- Iterates dates from a list file.
+- Uses `SIMULATION=${SIMULATION:-control}` to choose control or warming inputs.
+- Iterates both part1 and part2 list files in sequence.
+- Uses the correct source root for each list.
 - Runs one date at a time.
 - Writes per-date logs.
+
+### `launcher/compute_work_async_test_noslurm.sh`
+
+Minimal one-date validation launcher:
+
+- Uses one hardcoded source root:
+  - `/scratch/cimes/GLOBALFV3/20191020.00Z.C3072.L79x2_pire/history`
+- Uses one hardcoded date:
+  - `2020010300` (the first entry from `launcher/list/list_control_part1.txt`)
+- Writes a single temporary namelist and runs `compute_work_async` once.
+- Intended for quick smoke tests before launching full control or warming batches.
+
+### `launcher/compute_prate_threshold_noslurm.sh`
+
+Serial threshold-generation launcher:
+
+- Uses `SIMULATION=${SIMULATION:-control}` to choose control or warming inputs.
+- Writes one temporary namelist with two roots and two list files.
+- Runs `compute_prate_thresholds` once over all dates.
+- Writes threshold ASCII output to a simulation-specific path:
+  - control: `output/thresholds/thresholds_control.txt`
+  - warming: `output/thresholds/thresholds_warming.txt`
+
+### `launcher/compute_work_async_prate_threshold_array.sh` and `launcher/compute_work_async_prate_threshold_noslurm.sh`
+
+Thresholded async work/lift launchers:
+
+- Use `SIMULATION=${SIMULATION:-control}` to choose control or warming inputs.
+- Read dates from paired part1/part2 list files and use the matching source root for each date.
+- Pass `path_thresholds` in namelist to `compute_work_async_prate_threshold`.
+- Select simulation-specific threshold inputs by default:
+  - control: `output/thresholds/thresholds_control.txt`
+  - warming: `output/thresholds/thresholds_warming.txt`
+- Produce threshold-masked work NetCDF outputs per date.
+
+### Common Launcher Override Pattern
+
+All current launchers default to the control simulation and can be switched manually:
+
+- control: `./launcher/<script>.sh`
+- warming: `SIMULATION=warming ./launcher/<script>.sh`
+
+Advanced overrides remain available through environment variables such as:
+
+- `LIST_FILE_PART1`
+- `LIST_FILE_PART2`
+- `TARGET_DIR_COMPUTE`
+- `TARGET_DIR_HISTOGRAMS`
+- `THRESHOLD_FILE`
+
+Launcher-generated namelists are now written under `output/namelists/`.
+They are deleted after successful runs, but a failed Fortran invocation leaves the namelist behind for inspection.
 
 ## Post-Processing Layer
 

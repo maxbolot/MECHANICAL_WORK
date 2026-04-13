@@ -7,10 +7,16 @@ BIN_DIR := bin
 
 TARGET       := $(BIN_DIR)/compute_work
 TARGET_ASYNC := $(BIN_DIR)/compute_work_async
+TARGET_PRATE_THRESH := $(BIN_DIR)/compute_prate_thresholds
+TARGET_ASYNC_PRATE_WORK := $(BIN_DIR)/compute_work_async_prate_threshold
 SOURCES      := $(SRC_DIR)/compute_work.f90
 SOURCES_ASYNC:= $(SRC_DIR)/compute_work_async.f90
+SOURCES_PRATE_THRESH := $(SRC_DIR)/compute_prate_thresholds.f90
+SOURCES_ASYNC_PRATE_WORK := $(SRC_DIR)/compute_work_async_prate_threshold.f90
 OBJECTS      := $(OBJ_DIR)/compute_work.o
 OBJECTS_ASYNC:= $(OBJ_DIR)/compute_work_async.o
+OBJECTS_PRATE_THRESH := $(OBJ_DIR)/compute_prate_thresholds.o
+OBJECTS_ASYNC_PRATE_WORK := $(OBJ_DIR)/compute_work_async_prate_threshold.o
 
 EXT_INC_DIR := $(HOME)/local/include
 EXT_LIB_DIR := $(HOME)/local/lib
@@ -24,7 +30,7 @@ LDLIBS := -linterp -lnc -lhist
 
 .PHONY: all clean
 
-all: $(TARGET) $(TARGET_ASYNC)
+all: $(TARGET) $(TARGET_ASYNC) $(TARGET_PRATE_THRESH) $(TARGET_ASYNC_PRATE_WORK)
 
 $(TARGET): $(OBJECTS) | $(BIN_DIR)
 	$(MODULE_INIT) && \
@@ -36,12 +42,32 @@ $(TARGET_ASYNC): $(OBJECTS_ASYNC) | $(BIN_DIR)
 	$(MODULE_LOAD) && \
 	$(FC) $(LDFLAGS) -o $@ $(OBJECTS_ASYNC) $(LDLIBS) $$(nf-config --flibs)
 
+$(TARGET_PRATE_THRESH): $(OBJECTS_PRATE_THRESH) | $(BIN_DIR)
+	$(MODULE_INIT) && \
+	$(MODULE_LOAD) && \
+	$(FC) $(LDFLAGS) -o $@ $(OBJECTS_PRATE_THRESH) $(LDLIBS) $$(nf-config --flibs)
+
+$(TARGET_ASYNC_PRATE_WORK): $(OBJECTS_ASYNC_PRATE_WORK) | $(BIN_DIR)
+	$(MODULE_INIT) && \
+	$(MODULE_LOAD) && \
+	$(FC) $(LDFLAGS) -o $@ $(OBJECTS_ASYNC_PRATE_WORK) $(LDLIBS) $$(nf-config --flibs)
+
 $(OBJ_DIR)/compute_work.o: $(SRC_DIR)/compute_work.f90 | $(OBJ_DIR)
 	$(MODULE_INIT) && \
 	$(MODULE_LOAD) && \
 	$(FC) $(FFLAGS) $$(nf-config --fflags) -c $< -o $@
 
 $(OBJ_DIR)/compute_work_async.o: $(SRC_DIR)/compute_work_async.f90 | $(OBJ_DIR)
+	$(MODULE_INIT) && \
+	$(MODULE_LOAD) && \
+	$(FC) $(FFLAGS) $$(nf-config --fflags) -c $< -o $@
+
+$(OBJ_DIR)/compute_prate_thresholds.o: $(SRC_DIR)/compute_prate_thresholds.f90 | $(OBJ_DIR)
+	$(MODULE_INIT) && \
+	$(MODULE_LOAD) && \
+	$(FC) $(FFLAGS) $$(nf-config --fflags) -c $< -o $@
+
+$(OBJ_DIR)/compute_work_async_prate_threshold.o: $(SRC_DIR)/compute_work_async_prate_threshold.f90 | $(OBJ_DIR)
 	$(MODULE_INIT) && \
 	$(MODULE_LOAD) && \
 	$(FC) $(FFLAGS) $$(nf-config --fflags) -c $< -o $@
@@ -53,4 +79,4 @@ $(BIN_DIR):
 	mkdir -p $@
 
 clean:
-	rm -f $(OBJECTS) $(OBJECTS_ASYNC) $(TARGET) $(TARGET_ASYNC)
+	rm -f $(OBJECTS) $(OBJECTS_ASYNC) $(OBJECTS_PRATE_THRESH) $(OBJECTS_ASYNC_PRATE_WORK) $(TARGET) $(TARGET_ASYNC) $(TARGET_PRATE_THRESH) $(TARGET_ASYNC_PRATE_WORK)
