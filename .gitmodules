@@ -1,0 +1,3 @@
+[submodule "publication/paper_dissipation"]
+	path = publication/paper_dissipation
+	url = https://github.com/maxbolot/paper_dissipation.git
