@@ -112,6 +112,7 @@ Y2 = [change_prmax_zone1  change_scale_height_zone1; ...
 
 fig = figure('units','inch','position',[0,0,8,3.8]);
 set(gcf,'color','w')
+set(gcf,'WindowStyle','docked')
 
 t = tiledlayout(1,2);
 

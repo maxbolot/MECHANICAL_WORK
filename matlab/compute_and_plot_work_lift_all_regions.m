@@ -15,7 +15,7 @@ addpath(fullfile(script_dir, 'lib'));
 
 % Input files
 control_file = '/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180/work_2020010300_2022011200.nc';
-warming_file = '/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv/work_2020010300_2022012000.nc';
+warming_file = '/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv/work_2020010300_2022011800.nc';
 
 if ~isfile(control_file)
     error('Control file not found: %s', control_file);

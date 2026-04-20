@@ -1,20 +1,10 @@
 function [time_weights_days, missing_steps] = compute_time_weights_plus4k(time_axis, ncfile)
     % Build per-sample time weights for the +4K, 1270 ppmv scenario.
-    % Requested schedule:
-    %   - 5-day cadence before 2020-05-12
-    %   - 1-day cadence between 2020-05-12 and 2021-01-19
-    %   - 2-day cadence after 2021-01-19
-    % To keep scheduling deterministic even if dates are provided out of
-    % chronological order, interpret the middle segment chronologically.
+    % Time cadence is now treated as uniformly 1 day everywhere.
     %
     % Outputs:
     %   time_weights_days  per-sample duration weights in days
     %   missing_steps      count of expected scheduled outputs not present
-    cutoff_a_days = datenum(2020, 5, 12, 0, 0, 0);
-    cutoff_b_days = datenum(2021, 1, 19, 0, 0, 0);
-    mid_start_days = min(cutoff_a_days, cutoff_b_days);
-    mid_end_days = max(cutoff_a_days, cutoff_b_days);
-
     if nargin < 2
         ncfile = '';
     end
@@ -49,99 +39,37 @@ function [time_weights_days, missing_steps] = compute_time_weights_plus4k(time_a
         end
     end
 
-    % Warming schedule: 5-day, then 1-day, then 2-day segments.
-    time_weights_days = zeros(ntime, 1);
-    % Weights correspond to the averaging duration represented by each file.
-    time_weights_days(time_days < mid_start_days) = 5.0;
-    mid_mask = (time_days >= mid_start_days) & (time_days < mid_end_days);
-    time_weights_days(mid_mask) = 1.0;
-    time_weights_days(time_days >= mid_end_days) = 2.0;
+    time_weights_days = ones(ntime, 1);
 
     missing_steps = 0;
     if ntime > 1
-        % Allow modest clock offsets from file metadata while still keeping
-        % enough separation to distinguish neighboring scheduled outputs.
-        tol_days = 3.0 / 24.0;  % 3-hour tolerance: tolerates ~1.5-hour FRE timestamp offsets while remaining << 0.5-day (half min step)
+        % Allow larger clock offsets in timestamp metadata. Override with:
+        %   export MISSING_TIMESTEP_TOL_HOURS=<positive number>
+        tol_hours = get_missing_timestep_tolerance_hours();
+        tol_days = tol_hours / 24.0;
 
-        % Prefer filename-based schedule matching from ncrcat history when
-        % available. This is robust to midpoint clock-phase shifts around
-        % cadence transitions.
-        filename_starts_days = extract_input_start_dates_from_history(ncfile);
-        if ~isempty(filename_starts_days)
-            missing_steps = count_missing_from_start_dates(filename_starts_days, mid_start_days, mid_end_days, tol_days);
-            return;
-        end
-
-        % Fallback path: build expected midpoints by advancing cycle starts. This
-        % preserves the correct midpoint shift at cadence transitions
-        % (e.g. 1-day -> 2-day), avoiding false missing-step inflation.
-        expected = build_expected_midpoints(time_days(1), time_days(end), mid_start_days, mid_end_days, tol_days);
-
-        % Two-pointer match between expected and observed times.
-        % Observed times that are earlier than the current expected slot are
-        % skipped until the first candidate match is reached.
-        iobs = 1;
-        for iexp = 1:numel(expected)
-            while (iobs <= ntime) && (time_days(iobs) < expected(iexp) - tol_days)
-                iobs = iobs + 1;
-            end
-
-            if (iobs > ntime) || (abs(time_days(iobs) - expected(iexp)) > tol_days)
-                missing_steps = missing_steps + 1;
-            end
-        end
+        % Use the NetCDF time axis as the authoritative source for cadence
+        % checks. History strings from concat commands are often truncated and
+        % can inflate missing-step counts.
+        missing_steps = count_missing_daily_schedule(time_days, tol_days);
     end
 end
 
-function expected = build_expected_midpoints(first_mid_days, last_mid_days, mid_start_days, mid_end_days, tol_days)
-    % Infer initial cycle start from first midpoint and active cadence.
-    cad0_days = cadence_days_for_midpoint(first_mid_days, mid_start_days, mid_end_days);
-    start_days = first_mid_days - 0.5 * cad0_days;
+function tol_hours = get_missing_timestep_tolerance_hours()
+    % Default to an 18-hour tolerance to reduce sensitivity to timestamp
+    % phase shifts while still being stricter than a full day.
+    tol_hours = 18.0;
 
-    expected = [];
-    iter_guard = 0;
-    max_iter = 500000;
-
-    % Step through ideal cycle starts, then convert each start time to the
-    % midpoint expected for that cadence.
-    while true
-        cad_days = cadence_days_for_start(start_days, mid_start_days, mid_end_days);
-        mid_days = start_days + 0.5 * cad_days;
-
-        if mid_days > (last_mid_days + tol_days)
-            break;
-        end
-
-        expected(end + 1, 1) = mid_days; %#ok<AGROW>
-        start_days = start_days + cad_days;
-
-        iter_guard = iter_guard + 1;
-        if iter_guard > max_iter
-            error('Exceeded schedule generation guard. Check time units conversion.');
-        end
+    tol_str = getenv('MISSING_TIMESTEP_TOL_HOURS');
+    if isempty(tol_str)
+        return;
     end
-end
 
-function cad_days = cadence_days_for_midpoint(tmid_days, mid_start_days, mid_end_days)
-    % Cadence lookup when only midpoint time is known.
-    if tmid_days < mid_start_days
-        cad_days = 5.0;
-    elseif tmid_days < mid_end_days
-        cad_days = 1.0;
-    else
-        cad_days = 2.0;
+    tol_val = str2double(tol_str);
+    if ~isfinite(tol_val) || (tol_val <= 0)
+        error('MISSING_TIMESTEP_TOL_HOURS must be a positive numeric value. Got: %s', tol_str);
     end
-end
-
-function cad_days = cadence_days_for_start(tstart_days, mid_start_days, mid_end_days)
-    % Cadence lookup for file/cycle start times.
-    if tstart_days < mid_start_days
-        cad_days = 5.0;
-    elseif tstart_days < mid_end_days
-        cad_days = 1.0;
-    else
-        cad_days = 2.0;
-    end
+    tol_hours = tol_val;
 end
 
 function start_days = extract_input_start_dates_from_history(ncfile)
@@ -184,42 +112,34 @@ function start_days = extract_input_start_dates_from_history(ncfile)
     start_days = sort(start_days);
 end
 
-function missing_steps = count_missing_from_start_dates(start_days, mid_start_days, mid_end_days, tol_days)
-    % Count gaps in the ideal sequence of file start times.
-    if numel(start_days) <= 1
+function missing_steps = count_missing_daily_schedule(time_days, tol_days)
+    % Count gaps in an ideal daily sequence spanning the observed range.
+    time_days = sort(time_days(:));
+    if numel(time_days) <= 1
         missing_steps = 0;
         return;
     end
 
-    % Build the ideal sequence of file start times from first to last sample.
-    expected = start_days(1);
-    tcur = start_days(1);
-    tstop = start_days(end);
+    expected = time_days(1):1.0:time_days(end);
+    expected = expected(:);
     iter_guard = 0;
     max_iter = 500000;
 
-    while tcur < (tstop - tol_days)
-        tcur = tcur + cadence_days_for_start(tcur, mid_start_days, mid_end_days);
-        expected(end + 1, 1) = tcur; %#ok<AGROW>
-
-        iter_guard = iter_guard + 1;
-        if iter_guard > max_iter
-            error('Exceeded schedule generation guard while counting missing start dates.');
-        end
-    end
-
-    % Count expected starts that cannot be matched to any observed start.
-    % Matching is tolerant to small clock offsets but not to full cadence gaps.
     missing_steps = 0;
     iobs = 1;
-    nobs = numel(start_days);
+    nobs = numel(time_days);
     for iexp = 1:numel(expected)
-        while (iobs <= nobs) && (start_days(iobs) < expected(iexp) - tol_days)
+        while (iobs <= nobs) && (time_days(iobs) < expected(iexp) - tol_days)
             iobs = iobs + 1;
         end
 
-        if (iobs > nobs) || (abs(start_days(iobs) - expected(iexp)) > tol_days)
+        if (iobs > nobs) || (abs(time_days(iobs) - expected(iexp)) > tol_days)
             missing_steps = missing_steps + 1;
+        end
+
+        iter_guard = iter_guard + 1;
+        if iter_guard > max_iter
+            error('Exceeded daily schedule generation guard while counting missing times.');
         end
     end
 end

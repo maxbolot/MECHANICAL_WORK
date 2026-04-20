@@ -20,13 +20,30 @@ fi
 module purge
 module load intel/2021.1.2 hdf5/intel-2021.1/1.10.6 netcdf/intel-2021.1/hdf5-1.10.6/4.7.4 cdo/netcdf-4.7.4/hdf5-1.10.6/2.0.1 nco/netcdf-4.7.4/hdf5-1.10.6/5.0.3
 
-# Source folder containing histogram files named like hist_YYYYMMDDHH.nc
-# SRC_DIR="${SRC_DIR:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms}"
-SRC_DIR="${SRC_DIR:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_PLUS_4K_CO2_1270ppmv}"
+SIMULATION="${SIMULATION:-control}"
+
+case "$SIMULATION" in
+  control)
+    default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms"
+    default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms"
+    ;;
+  warming)
+    default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_PLUS_4K_CO2_1270ppmv"
+    default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_PLUS_4K_CO2_1270ppmv"
+    ;;
+  *)
+    echo "Error: unsupported SIMULATION='$SIMULATION'. Use 'control' or 'warming'." >&2
+    exit 1
+    ;;
+esac
+
+# Source folder containing histogram files named like hist_YYYYMMDDHH.nc.
+# Can be overridden via environment variable SRC_DIR.
+SRC_DIR="${SRC_DIR:-$default_src_dir}"
 
 # Destination folder for concatenated output.
-# OUT_DIR="${OUT_DIR:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms}"
-OUT_DIR="${OUT_DIR:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_PLUS_4K_CO2_1270ppmv}"
+# Can be overridden via environment variable OUT_DIR.
+OUT_DIR="${OUT_DIR:-$default_out_dir}"
 
 # Output filename prefix for histogram outputs.
 OUTPUT_PREFIX="${OUTPUT_PREFIX:-hist}"

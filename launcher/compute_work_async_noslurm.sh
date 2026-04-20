@@ -36,7 +36,7 @@ module purge || true
 module load intel-oneapi/2024.2 hdf5/oneapi-2024.2/1.14.4 netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2
 
 # Hardcoded OpenMP setting for serial execution.
-export OMP_NUM_THREADS=3
+export OMP_NUM_THREADS=2
 
 LOG_DIR=$PROJECT_ROOT/logs
 NAMELIST_DIR=$PROJECT_ROOT/output/namelists
@@ -83,9 +83,16 @@ echo "[$(date +%F\ %T)] Source root part1: $SOURCE_ROOT_PART1" | tee -a "$RUN_LO
 echo "[$(date +%F\ %T)] Source root part2: $SOURCE_ROOT_PART2" | tee -a "$RUN_LOG"
 echo "[$(date +%F\ %T)] Using binary: $COMPUTE_WORK_BIN" | tee -a "$RUN_LOG"
 
+FAILED_DATES=()
+
 process_list() {
     local list_file="$1"
     local source_root="$2"
+    local date
+    local source_dir
+    local config_file
+    local date_log
+    local rc
 
     while IFS= read -r raw_line; do
         date=$(echo "$raw_line" | tr -d '[:space:]')
@@ -96,11 +103,12 @@ process_list() {
         source_dir="$source_root/$date"
         if [[ ! -d "$source_dir" ]]; then
             echo "Warning: source directory missing for date $date in $source_root, skipping" | tee -a "$RUN_LOG"
+            FAILED_DATES+=("$date (missing source directory)")
             continue
         fi
 
         config_file="$NAMELIST_DIR/config_${date}.nml"
-        cat > "$config_file" << EOF
+        if ! cat > "$config_file" << EOF
 &config
     path_dz         = '$source_dir/DZ_C3072_1440x720.fre.nc',
     path_temp       = '$source_dir/temp_coarse_C3072_1440x720.fre.nc',
@@ -123,16 +131,38 @@ process_list() {
     path_hist_out   = '$TARGET_DIR_HISTOGRAMS/hist_$date.nc',
 /
 EOF
+        then
+            echo "[$(date +%F\ %T)] Failed to create config for date $date, skipping" | tee -a "$RUN_LOG"
+            FAILED_DATES+=("$date (failed to create namelist)")
+            continue
+        fi
 
         date_log="$LOG_DIR/compute_work_${date}.log"
         echo "[$(date +%F\ %T)] Running compute_work for date $date (log: $date_log)" | tee -a "$RUN_LOG"
-        "$COMPUTE_WORK_BIN" "$config_file" > "$date_log" 2>&1
-        echo "[$(date +%F\ %T)] Finished date $date" | tee -a "$RUN_LOG"
-        rm -f "$config_file"
+        if "$COMPUTE_WORK_BIN" "$config_file" > "$date_log" 2>&1; then
+            echo "[$(date +%F\ %T)] Finished date $date" | tee -a "$RUN_LOG"
+        else
+            rc=$?
+            echo "[$(date +%F\ %T)] Failed date $date (exit code: $rc). See $date_log" | tee -a "$RUN_LOG"
+            FAILED_DATES+=("$date (compute_work exit $rc)")
+        fi
+
+        if ! rm -f "$config_file"; then
+            echo "[$(date +%F\ %T)] Warning: failed to remove temporary config $config_file" | tee -a "$RUN_LOG"
+        fi
     done < "$list_file"
 }
 
 process_list "$LIST_FILE_PART1" "$SOURCE_ROOT_PART1"
 process_list "$LIST_FILE_PART2" "$SOURCE_ROOT_PART2"
 
-echo "[$(date +%F\ %T)] All dates processed serially." | tee -a "$RUN_LOG"
+if (( ${#FAILED_DATES[@]} > 0 )); then
+    echo "[$(date +%F\ %T)] All dates processed serially with ${#FAILED_DATES[@]} failure(s)." | tee -a "$RUN_LOG"
+    echo "[$(date +%F\ %T)] Failed dates summary:" | tee -a "$RUN_LOG"
+    for failed_entry in "${FAILED_DATES[@]}"; do
+        echo "  - $failed_entry" | tee -a "$RUN_LOG"
+    done
+    exit 1
+fi
+
+echo "[$(date +%F\ %T)] All dates processed serially with no failures." | tee -a "$RUN_LOG"

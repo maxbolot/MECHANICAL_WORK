@@ -1,6 +1,7 @@
 local/bin/
 local/obj/
 logs/
+output/
 
 .vscode/ifx-lint.log
 .vscode/ifx-lint.sh

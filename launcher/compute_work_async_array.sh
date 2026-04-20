@@ -16,7 +16,7 @@ SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 
 NTASKS=${NTASKS:-1}
 CPUS_PER_TASK=${CPUS_PER_TASK:-1}
-MEM_PER_CPU=${MEM_PER_CPU:-3G}
+MEM_PER_CPU=${MEM_PER_CPU:-5G}
 LOG_DIR=${LOG_DIR:-$PROJECT_ROOT/logs}
 
 SIMULATION=${SIMULATION:-control}
@@ -38,8 +38,16 @@ case "$SIMULATION" in
         TARGET_DIR_COMPUTE=${TARGET_DIR_COMPUTE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv}
         TARGET_DIR_HISTOGRAMS=${TARGET_DIR_HISTOGRAMS:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_PLUS_4K_CO2_1270ppmv}
         ;;
+    control_ea_to_025)
+        SOURCE_ROOT_PART1=/scratch/gpfs/mbolot/data/20191020.00Z.C3072.L79x2_pire.ea_to_0.25
+        SOURCE_ROOT_PART2=/scratch/gpfs/mbolot/data/20191020.00Z.C3072.L79x2_pire.ea_to_0.25
+        LIST_FILE_PART1=${LIST_FILE_PART1:-$PROJECT_ROOT/launcher/list/list_control_11520x5760.txt}
+        LIST_FILE_PART2=${LIST_FILE_PART2:-/dev/null}
+        TARGET_DIR_COMPUTE=${TARGET_DIR_COMPUTE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_ea_to_0.25}
+        TARGET_DIR_HISTOGRAMS=${TARGET_DIR_HISTOGRAMS:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_ea_to_0.25}
+        ;;
     *)
-        echo "Error: unsupported SIMULATION='$SIMULATION'. Use 'control' or 'warming'." >&2
+        echo "Error: unsupported SIMULATION='$SIMULATION'. Use 'control', 'warming', or 'control_ea_to_025'." >&2
         exit 1
         ;;
 esac

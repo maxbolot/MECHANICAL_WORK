@@ -20,13 +20,43 @@ fi
 module purge
 module load intel/2021.1.2 hdf5/intel-2021.1/1.10.6 netcdf/intel-2021.1/hdf5-1.10.6/4.7.4 cdo/netcdf-4.7.4/hdf5-1.10.6/2.0.1 nco/netcdf-4.7.4/hdf5-1.10.6/5.0.3
 
-# Source folder containing input files named like work_YYYYMMDDHH.nc
-SRC_DIR="${SRC_DIR:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720}"
-# SRC_DIR="${SRC_DIR:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv}"
+SIMULATION="${SIMULATION:-control}"
+
+case "$SIMULATION" in
+  control)
+    default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720"
+    default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180"
+    file_prefix="work_"
+    ;;
+  warming)
+    default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv"
+    default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv"
+    file_prefix="work_"
+    ;;
+  control_prate_thresholded)
+    default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_prate_thresholded"
+    default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180_prate_thresholded"
+    file_prefix="work_prate_threshold_"
+    ;;
+  warming_prate_thresholded)
+    default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv_prate_thresholded"
+    default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv_prate_thresholded"
+    file_prefix="work_prate_threshold_"
+    ;;
+  *)
+    echo "Error: unsupported SIMULATION='$SIMULATION'." >&2
+    echo "Use one of: control, warming, control_prate_thresholded, warming_prate_thresholded" >&2
+    exit 1
+    ;;
+esac
+
+# Source folder containing input files named like ${file_prefix}YYYYMMDDHH.nc.
+# Can be overridden via environment variable SRC_DIR.
+SRC_DIR="${SRC_DIR:-$default_src_dir}"
 
 # Destination folder for intermediate and final outputs.
-OUT_DIR="${OUT_DIR:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180}"
-# OUT_DIR="${OUT_DIR:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv}"
+# Can be overridden via environment variable OUT_DIR.
+OUT_DIR="${OUT_DIR:-$default_out_dir}"
 
 # CDO remapping operator. For coarse-graining, remapcon is usually appropriate.
 REMAP_METHOD="${REMAP_METHOD:-remapcon}"
@@ -57,18 +87,18 @@ trap cleanup EXIT
 
 shopt -s nullglob
 inputs=()
-for f in "$SRC_DIR"/work_*.nc; do
+for f in "$SRC_DIR"/${file_prefix}[0-9]*.nc; do
   b="$(basename "$f")"
   # Keep only canonical single-date files. Repaired files are selected as
   # aliases below to avoid duplicate entries in the timeline.
-  if [[ "$b" =~ ^work_[0-9]{10}\.nc$ ]]; then
+  if [[ "$b" =~ ^${file_prefix}[0-9]{10}\.nc$ ]]; then
     inputs+=("$f")
   fi
 done
 shopt -u nullglob
 
 if [[ ${#inputs[@]} -eq 0 ]]; then
-  echo "Error: no input files matching work_YYYYMMDDHH.nc found in $SRC_DIR" >&2
+  echo "Error: no input files matching ${file_prefix}YYYYMMDDHH.nc found in $SRC_DIR" >&2
   exit 1
 fi
 
@@ -79,14 +109,14 @@ unset IFS
 first_base="$(basename "${sorted_inputs[0]}")"
 last_base="$(basename "${sorted_inputs[${#sorted_inputs[@]}-1]}")"
 
-if [[ "$first_base" =~ ^work_([0-9]{10})\.nc$ ]]; then
+if [[ "$first_base" =~ ^${file_prefix}([0-9]{10})\.nc$ ]]; then
   date1="${BASH_REMATCH[1]}"
 else
   echo "Error: cannot parse start date from filename: $first_base" >&2
   exit 1
 fi
 
-if [[ "$last_base" =~ ^work_([0-9]{10})\.nc$ ]]; then
+if [[ "$last_base" =~ ^${file_prefix}([0-9]{10})\.nc$ ]]; then
   date2="${BASH_REMATCH[1]}"
 else
   echo "Error: cannot parse end date from filename: $last_base" >&2

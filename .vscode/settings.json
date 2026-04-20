@@ -9,5 +9,8 @@
     "-qopenmp",
     "-I/home/mbolot/local/include",
     "-I/usr/local/netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2/include"
-  ]
+  ],
+  "python-envs.defaultEnvManager": "ms-python.python:conda",
+  "python-envs.defaultPackageManager": "ms-python.python:conda",
+  "python.terminal.activateEnvironment": false
 }

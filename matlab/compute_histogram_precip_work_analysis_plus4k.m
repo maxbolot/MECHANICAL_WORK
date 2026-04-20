@@ -66,7 +66,7 @@ hist_area_sum = sum(hist_area, 2, 'omitnan');
 hist_area_freq = hist_area ./ hist_area_sum;
 hist_area_freq(hist_area_sum <= 0, :) = NaN;
 
-% Schedule-aware time weighting (same logic as compute_global_work_average_plus4k.m)
+% Uniform 1-day cadence time weighting.
 [time_weights_days, missing_steps] = compute_time_weights_plus4k(time, ncfile);
 if numel(time_weights_days) ~= ntime
     error('Time-weight vector length (%d) does not match data time length (%d).', numel(time_weights_days), ntime);
@@ -106,7 +106,7 @@ work_by_pr_timeavg(sum(work_den_w, 1) <= 0) = NaN;
 %% Display summary
 fprintf('\n=== RESULTS ===\n');
 fprintf('Simulation: plus4k\n');
-fprintf('Time weighting: schedule-aware warming (5-day then 1-day then 2-day segments)\n');
+fprintf('Time weighting: uniform 1-day cadence\n');
 fprintf('Detected missing timesteps: %d\n', missing_steps);
 fprintf('Number of time steps: %d\n', ntime);
 
