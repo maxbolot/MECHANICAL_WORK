@@ -38,6 +38,8 @@ The project is organized as a pipeline:
     - `check_hist_time_axis.sh`: checks timestamp drift in per-date histogram files; optionally removes drifted files.
     - `coarse_grain_and_concat_work.sh`: remaps per-date work files to a target grid, then concatenates into a single date-range file.
     - `concat_histograms.sh`: concatenates per-date histogram files into a single date-range file.
+- `python/`
+  - `make_ea_grid.py`: generates the CDO equal-area grid description file (`output/grids/ea_25km_grid.txt`) required by `script/preprocessing/ea_to_0.25_array.sh`.
 - `matlab/`
   - Region-specific analysis scripts for control and warming simulations.
   - `compute_and_plot_work_lift_all_regions.m`: combined multi-region summary + plotting script.
@@ -294,6 +296,20 @@ These checks do not modify files unless `REMOVE_SOURCE_FILES=1` is explicitly se
 - Collects canonical per-date histogram files (`hist_YYYYMMDDHH.nc`).
 - Concatenates chronologically to `hist_START_END.nc`.
 - If `time` is fixed-size, converts it to a record dimension (`ncks --mk_rec_dmn time`) before `ncrcat`.
+
+## Python Utilities
+
+`python/make_ea_grid.py` generates the CDO grid description file for the equal-area (EA) intermediate grid used during native-to-0.25-degree remapping.
+
+- Grid layout: 1440 × 720, longitude spacing 0.25° uniform, latitude spacing uniform in sin(lat) (equal area).
+- Cell centers are computed as midpoints in sine space to ensure exact area conservation.
+- Writes `output/grids/ea_25km_grid.txt` in CDO `lonlat` grid format including `xvals`, `xbounds`, `yvals`, `ybounds`.
+- Must be run once before generating remap weights with `script/preprocessing/ea_to_0.25_array.sh`.
+
+Run:
+```bash
+python python/make_ea_grid.py
+```
 
 ## MATLAB Analysis Layer
 
