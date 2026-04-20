@@ -6,8 +6,10 @@ The project is organized as a pipeline:
 
 1. Low-level Fortran kernels compute per-date work products.
 2. Launcher scripts run those kernels over many dates (typically via Slurm arrays).
-3. Processing scripts repair/normalize time axes and concatenate outputs.
-4. MATLAB scripts produce regional weighted averages and comparison plots.
+3. Optional preprocessing scripts remap native high-resolution fields onto the analysis grid.
+4. Post-processing scripts validate time axes and concatenate outputs.
+5. MATLAB scripts produce regional weighted averages and comparison plots.
+6. Publication submodules manage paper-specific TeX/Bib and final figure assets.
 
 ## Project Structure
 
@@ -29,14 +31,21 @@ The project is organized as a pipeline:
   - `compute_work_async_prate_threshold_noslurm.sh`: serial launcher for thresholded async work/lift.
   - `list/`: simulation-specific date lists for part1/part2 source roots.
 - `script/`
-  - `repair_work_time_axis.sh`: detects and repairs inconsistent time coordinates in per-date work files.
-  - `coarse_grain_and_concat_work.sh`: remaps per-date files to a target grid, then concatenates.
-  - `concat_histograms.sh`: concatenates per-date histogram files.
+  - `preprocessing/`
+    - `ea_to_0.25_array.sh`: Slurm array job that remaps native-resolution fields to the 0.25-degree Fortran input grid via conservative equal-area remapping.
+  - `postprocessing/`
+    - `check_work_time_axis.sh`: checks timestamp drift in per-date work files; optionally removes drifted files.
+    - `check_hist_time_axis.sh`: checks timestamp drift in per-date histogram files; optionally removes drifted files.
+    - `coarse_grain_and_concat_work.sh`: remaps per-date work files to a target grid, then concatenates into a single date-range file.
+    - `concat_histograms.sh`: concatenates per-date histogram files into a single date-range file.
 - `matlab/`
   - Region-specific analysis scripts for control and warming simulations.
   - `compute_and_plot_work_lift_all_regions.m`: combined multi-region summary + plotting script.
   - `lib/`: shared MATLAB helpers.
 - `logs/`: Slurm and run logs.
+- `publication/`
+  - `paper_dissipation/`: paper-specific manuscript and figure workspace tracked as a Git submodule.
+  - `.gitmodules` in repo root points to the submodule URL.
 - `setup_matlab_proxy.sh`: helper to launch MATLAB proxy environment.
 
 ## Low-Level Fortran Logic
@@ -242,37 +251,45 @@ They are deleted after successful runs, but a failed Fortran invocation leaves t
 
 ## Post-Processing Layer
 
-### 1) Time-Axis Repair
+### 1) Time-Axis Quality Checks
 
-`script/repair_work_time_axis.sh` scans `work_YYYYMMDDHH.nc` files and compares:
+`script/postprocessing/check_work_time_axis.sh` scans `work_YYYYMMDDHH.nc` (or thresholded `work_prate_threshold_YYYYMMDDHH.nc`) files and compares:
 
-- expected midpoint timestamp inferred from filename and cadence rules
+- expected start timestamp inferred from the filename (`YYYYMMDDHH`)
 - actual first timestamp in file (`cdo showtimestamp`)
 
-Default control cadence used for repair script:
+`script/postprocessing/check_hist_time_axis.sh` performs the same drift check for `hist_YYYYMMDDHH.nc` files.
 
-- 5-day before `2021-05-27`
-- 1-day on/after `2021-05-27`
+Both scripts support:
 
-If absolute drift exceeds `MAX_DIFF_DAYS` (default 5), it writes:
+- `MAX_DIFF_DAYS` to control tolerated drift.
+- `DRY_RUN=1` to preview actions.
+- `REMOVE_SOURCE_FILES=1` to remove files that exceed the drift threshold.
 
-- `work_YYYYMMDDHH.taxis_repaired.nc`
+These checks do not modify files unless `REMOVE_SOURCE_FILES=1` is explicitly set.
 
-`DRY_RUN=1` prints planned actions without writing files.
+### 2) Remap Native Fields to 0.25-Degree Inputs (Optional)
 
-### 2) Remap + Concatenate Work Files
+`script/preprocessing/ea_to_0.25_array.sh` prepares Fortran-ready coarse inputs from native-resolution fields:
 
-`script/coarse_grain_and_concat_work.sh`:
+- Reads dates from a list file and processes each date directory.
+- Generates conservative remap weights for native -> equal-area and equal-area -> `r1440x720`.
+- Produces mean and covariance fields expected by the work kernels.
+- Supports split execution by field group (`RUN_GROUP=group1|group2|all`).
+
+### 3) Remap + Concatenate Work Files
+
+`script/postprocessing/coarse_grain_and_concat_work.sh`:
 
 - Collects canonical per-date work files (`work_YYYYMMDDHH.nc`).
-- Preferentially substitutes repaired counterparts if present.
+- If `*.taxis_repaired.nc` companions are present, uses them instead of original files.
 - Remaps each file with CDO (default `remapcon,r360x180`).
 - Concatenates remapped files with `ncrcat` into a date-range product:
   - `work_START_END.nc`
 
-### 3) Concatenate Histograms
+### 4) Concatenate Histograms
 
-`script/concat_histograms.sh`:
+`script/postprocessing/concat_histograms.sh`:
 
 - Collects canonical per-date histogram files (`hist_YYYYMMDDHH.nc`).
 - Concatenates chronologically to `hist_START_END.nc`.
@@ -339,12 +356,28 @@ Each script typically:
 ## Typical End-to-End Flow
 
 1. Build Fortran binaries in `local/`.
-2. Prepare date list in `launcher/list.txt`.
+2. Prepare date lists in `launcher/list/`.
 3. Run launcher (Slurm array or serial fallback) to generate per-date `work_*.nc` and `hist_*.nc`.
-4. Run `script/repair_work_time_axis.sh` if time metadata issues are suspected.
-5. Run `script/coarse_grain_and_concat_work.sh` to produce concatenated `work_START_END.nc`.
-6. Optionally run `script/concat_histograms.sh` for histogram products.
-7. Run MATLAB regional scripts or the all-regions summary script.
+4. Optional: run `script/preprocessing/ea_to_0.25_array.sh` if native-to-analysis-grid preprocessing is needed.
+5. Run `script/postprocessing/check_work_time_axis.sh` and `script/postprocessing/check_hist_time_axis.sh` to detect drift before concatenation.
+6. Run `script/postprocessing/coarse_grain_and_concat_work.sh` to produce concatenated `work_START_END.nc`.
+7. Optionally run `script/postprocessing/concat_histograms.sh` for histogram products.
+8. Run MATLAB regional scripts or the all-regions summary script.
+
+## Publication and Manuscript Workflow
+
+Paper workspaces are managed under `publication/` as separate Git submodules.
+
+Current paper workspace:
+
+- `publication/paper_dissipation/`
+  - `main.tex`, `references.bib`, `styles_and_macros.sty`
+  - `figures/`, `tables/`
+  - `figures_src/`, `logs/`, `manifests/`
+  - `Makefile`, `.gitignore`, `.overleafignore`
+
+Overleaf sync is controlled from inside the paper submodule with `.overleafignore`.
+By default, non-manuscript assets (`figures_src/`, `logs/`, `manifests/`, `Makefile`, `.gitignore`) are excluded from Overleaf to reduce sync clutter.
 
 ## Environment Notes
 
