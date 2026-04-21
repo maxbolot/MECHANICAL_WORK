@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -A geoclim
-#SBATCH --time=22:00:00
+#SBATCH --time=23:30:00
 #SBATCH --qos=cimes-short
 #SBATCH --mail-type=FAIL,END
 #SBATCH --mail-user=mbolot@princeton.edu
@@ -8,7 +8,7 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-PROJECT_ROOT=${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}
+PROJECT_ROOT=${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}
 SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 
 NTASKS=${NTASKS:-1}
@@ -25,8 +25,14 @@ CDO_P_THREADS=${CDO_P_THREADS:-$OMP_NUM_THREADS}
 SOURCE_ROOT=${SOURCE_ROOT:-/scratch/cimes/GLOBALFV3/20191020.00Z.C3072.L79x2_pire/history}
 LIST_FILE=${LIST_FILE:-$PROJECT_ROOT/launcher/list/list_control_11520x5760.txt}
 TARGET_ROOT=${TARGET_ROOT:-/scratch/gpfs/mbolot/data/20191020.00Z.C3072.L79x2_pire.ea_to_0.25}
-# group1: fields 1-12, group2: fields 13-17, all: submit both groups in one array.
+# group1: DZ..PRATEsfc, group2: omT..omqv, group3: omql..omqr,
+# group4: omqi..omqg, all: submit all groups in one array.
 RUN_GROUP=${RUN_GROUP:-all}
+# Throttle 1 (global): cap how many array tasks can run cluster-wide via --array=...%N.
+# 0 means no cap suffix is added.
+ARRAY_MAX_CONCURRENT=${ARRAY_MAX_CONCURRENT:-0}
+# Optional scheduler hint to distribute concurrent array tasks across nodes.
+SPREAD_JOB=${SPREAD_JOB:-0}
 
 GRID_FILE=${GRID_FILE:-$PROJECT_ROOT/output/grids/ea_25km_grid.txt}
 WEIGHTS_DIR=${WEIGHTS_DIR:-$PROJECT_ROOT/output/grids}
@@ -293,10 +299,6 @@ run_group1_fields() {
     echo "[$date][group1] Generating PRATEsfc_coarse_C3072_1440x720.fre.nc"
     produce_mean_field "$source_dir" "$target_dir" "PRATEsfc_coarse_C3072_1440x720.fre.nc" "$NATIVE_PR_FILE"
 
-    echo "[$date][group1] Generating omT_coarse_C3072_1440x720.fre.nc"
-    produce_cov_field "$source_dir" "$target_dir" "omT_coarse_C3072_1440x720.fre.nc" "$NATIVE_TEMP_FILE"
-    echo "[$date][group1] Generating omqv_coarse_C3072_1440x720.fre.nc"
-    produce_cov_field "$source_dir" "$target_dir" "omqv_coarse_C3072_1440x720.fre.nc" "$NATIVE_QV_FILE"
 }
 
 run_group2_fields() {
@@ -304,15 +306,33 @@ run_group2_fields() {
     local source_dir=$2
     local target_dir=$3
 
-    echo "[$date][group2] Generating omql_coarse_C3072_1440x720.fre.nc"
+    echo "[$date][group2] Generating omT_coarse_C3072_1440x720.fre.nc"
+    produce_cov_field "$source_dir" "$target_dir" "omT_coarse_C3072_1440x720.fre.nc" "$NATIVE_TEMP_FILE"
+    echo "[$date][group2] Generating omqv_coarse_C3072_1440x720.fre.nc"
+    produce_cov_field "$source_dir" "$target_dir" "omqv_coarse_C3072_1440x720.fre.nc" "$NATIVE_QV_FILE"
+}
+
+run_group3_fields() {
+    local date=$1
+    local source_dir=$2
+    local target_dir=$3
+
+    echo "[$date][group3] Generating omql_coarse_C3072_1440x720.fre.nc"
     produce_cov_field "$source_dir" "$target_dir" "omql_coarse_C3072_1440x720.fre.nc" "$NATIVE_QW_FILE"
-    echo "[$date][group2] Generating omqr_coarse_C3072_1440x720.fre.nc"
+    echo "[$date][group3] Generating omqr_coarse_C3072_1440x720.fre.nc"
     produce_cov_field "$source_dir" "$target_dir" "omqr_coarse_C3072_1440x720.fre.nc" "$NATIVE_QR_FILE"
-    echo "[$date][group2] Generating omqi_coarse_C3072_1440x720.fre.nc"
+}
+
+run_group4_fields() {
+    local date=$1
+    local source_dir=$2
+    local target_dir=$3
+
+    echo "[$date][group4] Generating omqi_coarse_C3072_1440x720.fre.nc"
     produce_cov_field "$source_dir" "$target_dir" "omqi_coarse_C3072_1440x720.fre.nc" "$NATIVE_QI_FILE"
-    echo "[$date][group2] Generating omqs_coarse_C3072_1440x720.fre.nc"
+    echo "[$date][group4] Generating omqs_coarse_C3072_1440x720.fre.nc"
     produce_cov_field "$source_dir" "$target_dir" "omqs_coarse_C3072_1440x720.fre.nc" "$NATIVE_QS_FILE"
-    echo "[$date][group2] Generating omqg_coarse_C3072_1440x720.fre.nc"
+    echo "[$date][group4] Generating omqg_coarse_C3072_1440x720.fre.nc"
     produce_cov_field "$source_dir" "$target_dir" "omqg_coarse_C3072_1440x720.fre.nc" "$NATIVE_QG_FILE"
 }
 
@@ -337,8 +357,14 @@ process_single_date() {
         group2)
             run_group2_fields "$date" "$source_dir" "$target_dir"
             ;;
+        group3)
+            run_group3_fields "$date" "$source_dir" "$target_dir"
+            ;;
+        group4)
+            run_group4_fields "$date" "$source_dir" "$target_dir"
+            ;;
         *)
-            echo "Error: unsupported RUN_GROUP='$group'. Use 'group1', 'group2', or 'all'." >&2
+            echo "Error: unsupported RUN_GROUP='$group'. Use 'group1', 'group2', 'group3', 'group4', or 'all'." >&2
             exit 1
             ;;
     esac
@@ -359,10 +385,10 @@ if [[ ! -f "$GRID_FILE" ]]; then
 fi
 
 case "$RUN_GROUP" in
-    group1|group2|all)
+    group1|group2|group3|group4|all)
         ;;
     *)
-        echo "Error: unsupported RUN_GROUP='$RUN_GROUP'. Use 'group1', 'group2', or 'all'." >&2
+        echo "Error: unsupported RUN_GROUP='$RUN_GROUP'. Use 'group1', 'group2', 'group3', 'group4', or 'all'." >&2
         exit 1
         ;;
 esac
@@ -383,15 +409,31 @@ if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
     fi
 
     case "$RUN_GROUP" in
-        group1|group2)
+        group1|group2|group3|group4)
             # One task per date when only one group is requested.
             n_tasks=$n_dates
             ;;
         all)
-            # all = two tasks per date: first pass group1, second pass group2.
-            n_tasks=$(( 2 * n_dates ))
+            # all = four tasks per date: pass group1..group4 separately.
+            n_tasks=$(( 4 * n_dates ))
             ;;
     esac
+
+    if [[ ! "$ARRAY_MAX_CONCURRENT" =~ ^[0-9]+$ ]]; then
+        echo "Error: ARRAY_MAX_CONCURRENT must be a non-negative integer, got '$ARRAY_MAX_CONCURRENT'" >&2
+        exit 1
+    fi
+
+    if [[ ! "$SPREAD_JOB" =~ ^(0|1)$ ]]; then
+        echo "Error: SPREAD_JOB must be 0 or 1, got '$SPREAD_JOB'" >&2
+        exit 1
+    fi
+
+    # Build Slurm array spec with optional %concurrency suffix.
+    array_spec="1-$n_tasks"
+    if (( ARRAY_MAX_CONCURRENT > 0 )); then
+        array_spec="$array_spec%$ARRAY_MAX_CONCURRENT"
+    fi
 
     template_native=$(find_template_native_file || true)
     if [[ -z "${template_native:-}" ]]; then
@@ -401,13 +443,19 @@ if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
 
     ensure_weights_from_template "$template_native"
 
-    echo "Submitting ea_to_0.25 job array with $n_tasks tasks (RUN_GROUP=$RUN_GROUP, dates=$n_dates)"
+        echo "Submitting ea_to_0.25 job array with $n_tasks tasks (RUN_GROUP=$RUN_GROUP, dates=$n_dates, array='$array_spec')"
     echo "Resources per array task: ntasks=$NTASKS, cpus-per-task=$CPUS_PER_TASK, mem-per-cpu=$MEM_PER_CPU"
     echo "CDO threading: -P $CDO_P_THREADS (OMP_NUM_THREADS=$OMP_NUM_THREADS)"
+    if (( SPREAD_JOB == 1 )); then
+            echo "Scheduler hint: --spread-job enabled"
+            spread_flag=(--spread-job)
+        else
+            spread_flag=()
+        fi
 
-    sbatch --array=1-"$n_tasks" --ntasks="$NTASKS" --cpus-per-task="$CPUS_PER_TASK" --mem-per-cpu="$MEM_PER_CPU" \
+        sbatch "${spread_flag[@]}" --array="$array_spec" --ntasks="$NTASKS" --cpus-per-task="$CPUS_PER_TASK" --mem-per-cpu="$MEM_PER_CPU" \
            --output="$LOG_DIR/ea_to_0.25_%A_%a.out" --error="$LOG_DIR/ea_to_0.25_%A_%a.err" \
-           --export=ALL,PROJECT_ROOT="$PROJECT_ROOT",SOURCE_ROOT="$SOURCE_ROOT",LIST_FILE="$LIST_FILE",TARGET_ROOT="$TARGET_ROOT",GRID_FILE="$GRID_FILE",WEIGHTS_DIR="$WEIGHTS_DIR",WEIGHTS_NATIVE_TO_EA="$WEIGHTS_NATIVE_TO_EA",WEIGHTS_EA_TO_025="$WEIGHTS_EA_TO_025",NTASKS="$NTASKS",CPUS_PER_TASK="$CPUS_PER_TASK",MEM_PER_CPU="$MEM_PER_CPU",LOG_DIR="$LOG_DIR",RUN_GROUP="$RUN_GROUP" "$SCRIPT_PATH"
+               --export=ALL,PROJECT_ROOT="$PROJECT_ROOT",SOURCE_ROOT="$SOURCE_ROOT",LIST_FILE="$LIST_FILE",TARGET_ROOT="$TARGET_ROOT",GRID_FILE="$GRID_FILE",WEIGHTS_DIR="$WEIGHTS_DIR",WEIGHTS_NATIVE_TO_EA="$WEIGHTS_NATIVE_TO_EA",WEIGHTS_EA_TO_025="$WEIGHTS_EA_TO_025",NTASKS="$NTASKS",CPUS_PER_TASK="$CPUS_PER_TASK",MEM_PER_CPU="$MEM_PER_CPU",LOG_DIR="$LOG_DIR",RUN_GROUP="$RUN_GROUP",ARRAY_MAX_CONCURRENT="$ARRAY_MAX_CONCURRENT",SPREAD_JOB="$SPREAD_JOB" "$SCRIPT_PATH"
     exit $?
 fi
 
@@ -423,8 +471,8 @@ group_to_run=$RUN_GROUP
 date_idx=$idx
 
 if [[ "$RUN_GROUP" == "all" ]]; then
-    # In all-mode, first half of array indices map to group1 and second half to group2.
-    total_tasks=$(( 2 * n_dates ))
+    # In all-mode, quarter chunks map to group1/group2/group3/group4.
+    total_tasks=$(( 4 * n_dates ))
     if (( idx < 1 || idx > total_tasks )); then
         echo "Error: array index out of bounds: $idx (n=$total_tasks)" >&2
         exit 1
@@ -432,9 +480,15 @@ if [[ "$RUN_GROUP" == "all" ]]; then
     if (( idx <= n_dates )); then
         group_to_run=group1
         date_idx=$idx
-    else
+    elif (( idx <= 2 * n_dates )); then
         group_to_run=group2
         date_idx=$(( idx - n_dates ))
+    elif (( idx <= 3 * n_dates )); then
+        group_to_run=group3
+        date_idx=$(( idx - 2 * n_dates ))
+    else
+        group_to_run=group4
+        date_idx=$(( idx - 3 * n_dates ))
     fi
 else
     if (( idx < 1 || idx > n_dates )); then
@@ -460,7 +514,7 @@ fi
 date=${dates[date_idx-1]}
 
 if [[ "$RUN_GROUP" == "all" ]]; then
-    echo "Processing date $date (array task $idx/$((2 * n_dates)), group=$group_to_run)"
+    echo "Processing date $date (array task $idx/$((4 * n_dates)), group=$group_to_run)"
 else
     echo "Processing date $date (array task $idx/$n_dates, group=$group_to_run)"
 fi
