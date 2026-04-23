@@ -16,8 +16,8 @@ cfg.temporal_mode = 'instantaneous';
 
 % Preset times for display
 cfg.instantaneous_date = datetime(2021, 1, 1, 0, 0, 0, 'TimeZone', 'UTC');
-cfg.range_start = datetime(2020, 8, 1, 0, 0, 0, 'TimeZone', 'UTC');
-cfg.range_end = datetime(2020, 8, 30, 23, 59, 59, 'TimeZone', 'UTC');
+cfg.range_start = datetime(2020, 1, 1, 0, 0, 0, 'TimeZone', 'UTC');
+cfg.range_end = datetime(2021, 12, 31, 23, 59, 59, 'TimeZone', 'UTC');
 
 % Used only for thresholded simulations.
 cfg.threshold_percentile = 0.5;

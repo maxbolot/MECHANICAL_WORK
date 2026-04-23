@@ -7,18 +7,18 @@ addpath(fullfile(matlab_base_dir, 'lib'));
 addpath(fullfile(matlab_base_dir, 'analysis'));
 addpath(fullfile(matlab_base_dir, 'presets'));
 
-cfg.run_mode = 'non_thresholded';
+cfg.run_mode = 'prate_thresholded';
 % Supported: non_thresholded | prate_thresholded
 
 cfg.threshold_percentile = 0.5;
 cfg.g = 9.81;
 
-% Optional manual color limits per panel; leave empty for auto symmetric limits.
-cfg.clim_hp = [-5e3, 5e3];
-cfg.clim_precip = [-6e-5, 6e-5];
+% Optional manual color limits per panel; leave empty for auto limits.
+cfg.clim_hp = [0, 2e4];
+cfg.clim_precip = [];
 
 % Optional manual contour levels per panel; leave empty for auto levels.
-cfg.contour_levels_hp = [2000 4000 6000 8000 10000];
-cfg.contour_levels_precip = [1.36132e-08 3.10351e-05 6.20566e-05 9.30781e-05 0.0001241 0.000155121 0.000186143 0.000217164 0.000248186];
+cfg.contour_levels_hp = [];
+cfg.contour_levels_precip = [1e-10];
 
-run_hp_precip_delta_lonlat_map_analysis(cfg);
+run_hp_precip_control_lonlat_map_analysis(cfg);

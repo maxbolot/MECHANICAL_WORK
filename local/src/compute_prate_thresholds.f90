@@ -423,6 +423,7 @@ contains
         real(8), allocatable :: x_log(:), y_log(:)
         real(8), allocatable :: x_query(:), y_query(:)
         real(8) :: p_clamped, max_requested
+        integer :: n_interp
 
         if (size(edges) /= size(cdf_edges)) then
             error stop 'compute_percentile_thresholds_loglog: edges/cdf size mismatch'
@@ -468,17 +469,26 @@ contains
             error stop 'compute_percentile_thresholds_loglog: requested percentiles exceed CDF coverage'
         end if
 
-        allocate(x_log(nkeep), y_log(nkeep))
-        x_log = log10(x_data(1:nkeep))
-        y_log = log10(y_data(1:nkeep))
+        ! We must use nkeep - 1 because the final CDF point is artificially 1.0
+        ! and log10(1.0 - 1.0) will result in -Infinity.
+        n_interp = nkeep - 1
+
+        allocate(x_log(n_interp), y_log(n_interp))
+        ! Transform X into Log-Survival Space: log10(1 - F)
+        ! Transform Y into Log-Precip Space: log10(P)
+        do i = 1, n_interp
+            x_log(i) = log10(1.0d0 - x_data(i))
+        end do
+        y_log = log10(y_data(1:n_interp))
 
         allocate(x_query(1), y_query(1))
         do i = 1, size(percentiles)
             ! Clamp inside valid support to avoid edge round-off failures
             ! when taking log10 and interpolating.
-            p_clamped = min(max(percentiles(i), x_data(1)), x_data(nkeep))
-            x_query(1) = log10(p_clamped)
-            call interp1(y_query, x_log, y_log, x_query, y_log(nkeep))
+            p_clamped = min(max(percentiles(i), x_data(1)), x_data(n_interp))
+            ! Transform the target percentile into Log-Survival Space
+            x_query(1) = log10(1.0d0 - p_clamped)
+            call interp1(y_query, x_log, y_log, x_query, y_log(n_interp))
             thresholds_out(i) = 10.0d0 ** y_query(1)
         end do
 

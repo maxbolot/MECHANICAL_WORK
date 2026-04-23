@@ -1,6 +1,6 @@
 function [lift3d_out, precip3d_out, common_time_days] = intersect_common_daily_time_range( ...
-    % Restricts lift and precipitation fields to shared daily timestamps.
     lift3d, lift_time_axis, lift_ncfile, precip3d, precip_time_axis, precip_ncfile, tag)
+    % Restricts lift and precipitation fields to shared daily timestamps.
 
     lift_time_days = normalize_time_axis_to_datenum(lift_time_axis, lift_ncfile);
     precip_time_days = normalize_time_axis_to_datenum(precip_time_axis, precip_ncfile);

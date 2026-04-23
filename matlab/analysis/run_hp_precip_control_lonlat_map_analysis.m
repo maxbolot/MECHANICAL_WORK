@@ -1,27 +1,13 @@
-function run_hp_precip_delta_lonlat_map_analysis(cfg)
-    % Computes control-vs-warming Hp and precipitation deltas and renders map panels.
+function run_hp_precip_control_lonlat_map_analysis(cfg)
+    % Computes control-simulation Hp and precipitation absolute maps and renders map panels.
     cfg = apply_defaults(cfg);
 
     control_scenario = scenario_control();
-    warming_scenario = scenario_plus4k();
+    control_maps = process_simulation(control_scenario, cfg, 'control');
 
-    control_maps = process_simulation_pair(control_scenario, cfg, 'control');
-    warming_maps = process_simulation_pair(warming_scenario, cfg, 'warming');
-
-    if numel(control_maps.lon) ~= numel(warming_maps.lon) || any(abs(control_maps.lon - warming_maps.lon) > 1.0e-10)
-        error('Control and warming longitudes do not match.');
-    end
-    if numel(control_maps.lat) ~= numel(warming_maps.lat) || any(abs(control_maps.lat - warming_maps.lat) > 1.0e-10)
-        error('Control and warming latitudes do not match.');
-    end
-
-    delta_hp = warming_maps.hp_mean - control_maps.hp_mean;
-    delta_precip = warming_maps.precip_mean - control_maps.precip_mean;
-
-    plot_delta_maps(control_maps.lon, control_maps.lat, ...
-        delta_hp, control_maps.hp_mean, ...
-        delta_precip, control_maps.precip_mean, ...
-        build_main_title(cfg.run_mode, control_maps, warming_maps), cfg);
+    plot_control_maps(control_maps.lon, control_maps.lat, ...
+        control_maps.hp_mean, control_maps.precip_mean, ...
+        build_main_title(cfg.run_mode, control_maps), cfg);
 end
 
 
@@ -54,14 +40,16 @@ function cfg = apply_defaults(cfg)
 end
 
 
-function out = process_simulation_pair(scenario, cfg, tag)
+function out = process_simulation(scenario, cfg, tag)
     files = resolve_files_for_mode(scenario, cfg.run_mode);
 
     ensure_file_exists(files.lift_ncfile, sprintf('%s lift/work file', tag));
-    if isempty(files.precip_ncfile) || ~isfile(files.precip_ncfile)
-        fprintf(['%s precip file is missing in preset for mode "%s". ' ...
+    if isempty(files.precip_ncfile)
+        fprintf(['%s precip file not configured in preset for mode "%s". ' ...
             'Falling back to lift/work file for precipitation variable lookup.\n'], tag, cfg.run_mode);
         files.precip_ncfile = files.lift_ncfile;
+    else
+        ensure_file_exists(files.precip_ncfile, sprintf('%s precip file', tag));
     end
 
     lon = double(ncread(files.lift_ncfile, 'lon'));
@@ -125,15 +113,13 @@ function ensure_file_exists(ncfile, label)
 end
 
 
-function plot_delta_maps(lon_in, lat_in, delta_hp, hp_control, delta_p, p_control, main_title, cfg)
-    [lon, delta_hp, hp_control] = normalize_and_sort_longitude(lon_in, delta_hp, hp_control);
-    [~, delta_p, p_control] = normalize_and_sort_longitude(lon_in, delta_p, p_control);
+function plot_control_maps(lon_in, lat_in, hp_map, precip_map, main_title, cfg)
+    [lon, hp_map] = normalize_and_sort_longitude(lon_in, hp_map);
+    [~, precip_map] = normalize_and_sort_longitude(lon_in, precip_map);
     lat = double(lat_in(:));
 
-    [lon_plot, delta_hp_plot] = append_cyclic_longitude(lon, delta_hp);
-    [~, hp_control_plot] = append_cyclic_longitude(lon, hp_control);
-    [~, delta_p_plot] = append_cyclic_longitude(lon, delta_p);
-    [~, p_control_plot] = append_cyclic_longitude(lon, p_control);
+    [lon_plot, hp_plot] = append_cyclic_longitude(lon, hp_map);
+    [~, precip_plot] = append_cyclic_longitude(lon, precip_map);
 
     [X, Y] = ndgrid(lon_plot, lat);
 
@@ -144,21 +130,21 @@ function plot_delta_maps(lon_in, lat_in, delta_hp, hp_control, delta_p, p_contro
     set(fig, 'WindowStyle', 'docked');
 
     t = tiledlayout(2, 1, 'TileSpacing', 'compact', 'Padding', 'compact');
-    cm = blue_white_red_colormap(256);
+    cm = parula(256);
 
     ax1 = nexttile(1);
-    plot_delta_panel(ax1, X, Y, delta_hp_plot, hp_control_plot, cm, ...
-        'a. \DeltaH_p with control H_p contours', 'm', cfg.clim_hp, cfg.contour_levels_hp);
+    plot_control_panel(ax1, X, Y, hp_plot, cm, ...
+        'a. H_p (control)', 'm', cfg.clim_hp, cfg.contour_levels_hp);
 
     ax2 = nexttile(2);
-    plot_delta_panel(ax2, X, Y, delta_p_plot, p_control_plot, cm, ...
-        'b. \DeltaP with control P contours', 'kg m^{-2} s^{-1}', cfg.clim_precip, cfg.contour_levels_precip);
+    plot_control_panel(ax2, X, Y, precip_plot, cm, ...
+        'b. P (control)', 'kg m^{-2} s^{-1}', cfg.clim_precip, cfg.contour_levels_precip);
 
     sgtitle(t, main_title, 'Interpreter', 'none');
 end
 
 
-function plot_delta_panel(ax, X, Y, delta_field, control_field, cm, panel_title, colorbar_label, clim_override, contour_levels_override)
+function plot_control_panel(ax, X, Y, field, cm, panel_title, colorbar_label, clim_override, contour_levels_override)
     axes(ax);
 
     axesm('mercator', 'Frame', 'on', 'Grid', 'on', 'MapLatLimit', [-60 60], ...
@@ -167,14 +153,14 @@ function plot_delta_panel(ax, X, Y, delta_field, control_field, cm, panel_title,
         'mlabellocation', 60, 'plinelocation', 20, 'mlinelocation', 45, ...
         'MLabelParallel', 'south', 'FontSize', 8);
 
-    geoshow(Y, X, delta_field, 'DisplayType', 'texturemap');
+    geoshow(Y, X, field, 'DisplayType', 'texturemap');
     shading flat;
 
     hold on;
-    contour_levels = resolve_contour_levels(control_field, contour_levels_override);
+    contour_levels = resolve_contour_levels(field, contour_levels_override);
     print_contour_levels(panel_title, contour_levels, contour_levels_override);
     if ~isempty(contour_levels)
-        contourm(Y, X, control_field, contour_levels, 'k', 'LineWidth', 0.6);
+        contourm(Y, X, field, contour_levels, 'k', 'LineWidth', 0.6);
     end
     hold off;
 
@@ -189,7 +175,7 @@ function plot_delta_panel(ax, X, Y, delta_field, control_field, cm, panel_title,
     set(gca, 'Layer', 'top');
     colormap(gca, cm);
 
-    panel_clim = resolve_panel_clim(delta_field, clim_override);
+    panel_clim = resolve_panel_clim(field, clim_override);
     clim(panel_clim);
 
     title(panel_title, 'FontWeight', 'normal');
@@ -216,7 +202,7 @@ function print_contour_levels(panel_title, contour_levels, contour_levels_overri
 end
 
 
-function contour_levels = resolve_contour_levels(control_field, contour_levels_override)
+function contour_levels = resolve_contour_levels(field, contour_levels_override)
     if ~isempty(contour_levels_override)
         if ~(isnumeric(contour_levels_override) && isvector(contour_levels_override) && all(isfinite(contour_levels_override(:))))
             error('contour level override must be a finite numeric vector.');
@@ -228,11 +214,11 @@ function contour_levels = resolve_contour_levels(control_field, contour_levels_o
         return;
     end
 
-    contour_levels = contour_levels_for_field(control_field, 9);
+    contour_levels = contour_levels_for_field(field, 9);
 end
 
 
-function panel_clim = resolve_panel_clim(delta_field, clim_override)
+function panel_clim = resolve_panel_clim(field, clim_override)
     if ~isempty(clim_override)
         if ~(isnumeric(clim_override) && numel(clim_override) == 2 && all(isfinite(clim_override(:))))
             error('clim override must be a finite 2-element numeric vector [cmin cmax].');
@@ -244,11 +230,13 @@ function panel_clim = resolve_panel_clim(delta_field, clim_override)
         return;
     end
 
-    cmax = max(abs(delta_field(:)), [], 'omitnan');
-    if ~isfinite(cmax) || (cmax <= 0)
-        cmax = 1;
+    fmin = min(field(:), [], 'omitnan');
+    fmax = max(field(:), [], 'omitnan');
+    if ~isfinite(fmin) || ~isfinite(fmax) || (fmin == fmax)
+        fmin = 0;
+        fmax = 1;
     end
-    panel_clim = [-cmax, cmax];
+    panel_clim = [fmin, fmax];
 end
 
 
@@ -265,13 +253,11 @@ function levels = contour_levels_for_field(field, nlevels)
 end
 
 
-function [lon_sorted, map1_sorted, map2_sorted] = normalize_and_sort_longitude(lon_in, map1, map2)
+function [lon_sorted, map_sorted] = normalize_and_sort_longitude(lon_in, map_in)
     lon = double(lon_in(:));
     lon = mod(lon + 180, 360) - 180;
     [lon_sorted, idx] = sort(lon);
-
-    map1_sorted = map1(idx, :);
-    map2_sorted = map2(idx, :);
+    map_sorted = map_in(idx, :);
 end
 
 
@@ -281,30 +267,7 @@ function [lon_plot, field_plot] = append_cyclic_longitude(lon, field)
 end
 
 
-function cm = blue_white_red_colormap(n)
-    if nargin < 1
-        n = 256;
-    end
-
-    n1 = floor(n / 2);
-    n2 = n - n1;
-
-    blue = [0.1, 0.25, 0.85];
-    white = [1.0, 1.0, 1.0];
-    red = [0.85, 0.15, 0.1];
-
-    x1 = linspace(0, 1, n1).';
-    x2 = linspace(0, 1, n2).';
-
-    c1 = blue + (white - blue) .* x1;
-    c2 = white + (red - white) .* x2;
-    cm = [c1; c2];
+function title_text = build_main_title(run_mode, control_maps)
+    title_text = sprintf(['Control simulation (%s): time-mean H_p and P; ' ...
+        'N=%d samples'], run_mode, control_maps.sample_count);
 end
-
-
-function title_text = build_main_title(run_mode, control_maps, warming_maps)
-    title_text = sprintf(['Delta maps (%s): warming - control, full available 2-year period; ' ...
-        'control contours overlaid (Nctrl=%d, Nwarm=%d)'], ...
-        run_mode, control_maps.sample_count, warming_maps.sample_count);
-end
-

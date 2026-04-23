@@ -24,6 +24,8 @@ SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 
 SIMULATION="${SIMULATION:-control}"
+PRATE_THRESHOLDED=0
+THRESHOLD_FILE=""
 
 case "$SIMULATION" in
   control)
@@ -33,6 +35,15 @@ case "$SIMULATION" in
     LIST_FILE_PART2="${LIST_FILE_PART2:-$PROJECT_ROOT/launcher/list/list_control_part2.txt}"
     DEFAULT_OUT_DIR="/scratch/gpfs/mbolot/results/GLOBALFV3/precip_coarse_C3072_360x180"
     ;;
+  control_prate_thresholded)
+    SOURCE_ROOT_PART1="/scratch/cimes/GLOBALFV3/20191020.00Z.C3072.L79x2_pire/history"
+    SOURCE_ROOT_PART2="/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire/pp"
+    LIST_FILE_PART1="${LIST_FILE_PART1:-$PROJECT_ROOT/launcher/list/list_control_part1.txt}"
+    LIST_FILE_PART2="${LIST_FILE_PART2:-$PROJECT_ROOT/launcher/list/list_control_part2.txt}"
+    DEFAULT_OUT_DIR="/scratch/gpfs/mbolot/results/GLOBALFV3/precip_coarse_C3072_360x180_prate_thresholded"
+    PRATE_THRESHOLDED=1
+    THRESHOLD_FILE="${THRESHOLD_FILE:-$PROJECT_ROOT/output/thresholds/thresholds_control.txt}"
+    ;;
   warming)
     SOURCE_ROOT_PART1="/scratch/cimes/GLOBALFV3/stellar_run/processed/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp"
     SOURCE_ROOT_PART2="/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp"
@@ -40,9 +51,18 @@ case "$SIMULATION" in
     LIST_FILE_PART2="${LIST_FILE_PART2:-$PROJECT_ROOT/launcher/list/list_PLUS_4K_CO2_1270ppmv_part2.txt}"
     DEFAULT_OUT_DIR="/scratch/gpfs/mbolot/results/GLOBALFV3/precip_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv"
     ;;
+  warming_prate_thresholded)
+    SOURCE_ROOT_PART1="/scratch/cimes/GLOBALFV3/stellar_run/processed/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp"
+    SOURCE_ROOT_PART2="/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp"
+    LIST_FILE_PART1="${LIST_FILE_PART1:-$PROJECT_ROOT/launcher/list/list_PLUS_4K_CO2_1270ppmv_part1.txt}"
+    LIST_FILE_PART2="${LIST_FILE_PART2:-$PROJECT_ROOT/launcher/list/list_PLUS_4K_CO2_1270ppmv_part2.txt}"
+    DEFAULT_OUT_DIR="/scratch/gpfs/mbolot/results/GLOBALFV3/precip_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv_prate_thresholded"
+    PRATE_THRESHOLDED=1
+    THRESHOLD_FILE="${THRESHOLD_FILE:-$PROJECT_ROOT/output/thresholds/thresholds_warming.txt}"
+    ;;
   *)
     echo "Error: unsupported SIMULATION='$SIMULATION'." >&2
-    echo "Use one of: control, warming" >&2
+    echo "Use one of: control, warming, control_prate_thresholded, warming_prate_thresholded" >&2
     exit 1
     ;;
 esac
@@ -61,6 +81,11 @@ for cmd in cdo ncrcat; do
     exit 1
   fi
 done
+
+if [[ "$PRATE_THRESHOLDED" == "1" && ! -f "$THRESHOLD_FILE" ]]; then
+  echo "Error: threshold file not found for SIMULATION='$SIMULATION': $THRESHOLD_FILE" >&2
+  exit 1
+fi
 
 if [[ ! -f "$LIST_FILE_PART1" ]]; then
   echo "Error: list file not found: $LIST_FILE_PART1" >&2
@@ -99,60 +124,301 @@ cleanup() {
 }
 trap cleanup EXIT
 
-remapped_files=()
-for i in "${!entries[@]}"; do
-  source_root="${entries[$i]%|*}"
-  date="${entries[$i]#*|}"
-  source_dir="$source_root/$date"
-  in_file="$source_dir/$INPUT_FILENAME"
+# For thresholded mode: threshold + daily-aggregate BEFORE remap/concat
+# (matching Fortran workflow: compute_work_async_prate_threshold.f90 outputs daily aggregates with percentile dim,
+#  then coarse_grain_and_concat_work.sh remaps and concats those daily files).
+# For non-thresholded: remap each file, then concat, then daily-aggregate.
 
-  if [[ ! -d "$source_dir" ]]; then
-    echo "Error: source directory does not exist: $source_dir" >&2
+if [[ "$PRATE_THRESHOLDED" == "1" ]]; then
+  # Thresholded workflow (mirrors Fortran compute_work_async_prate_threshold.f90):
+  #   per input file: mask all thresholds at once → daily aggregate → remap
+  #   then: ncrcat per-threshold files → ncecat into percentile dimension
+  # Never concatenate raw native-resolution files; process each file individually
+  # to avoid OOM.
+  if ! command -v ncap2 >/dev/null 2>&1; then
+    echo "Error: ncap2 is required for PRATE thresholded output." >&2
+    exit 1
+  fi
+  if ! command -v ncks >/dev/null 2>&1; then
+    echo "Error: ncks is required for PRATE thresholded output." >&2
     exit 1
   fi
 
-  if [[ ! -f "$in_file" ]]; then
-    echo "Error: input file not found: $in_file" >&2
+  # Parse thresholds first
+  pvals_arr=()
+  tvals_arr=()
+  while read -r pval tval; do
+    pvals_arr+=("$pval")
+    tvals_arr+=("$tval")
+  done < <(awk 'NF && $1 !~ /^#/ {print $1, $2}' "$THRESHOLD_FILE")
+
+  nthreshold=${#pvals_arr[@]}
+  if [[ "$nthreshold" -eq 0 ]]; then
+    echo "Error: no valid threshold rows found in $THRESHOLD_FILE" >&2
     exit 1
   fi
+  echo "Found $nthreshold thresholds from $THRESHOLD_FILE"
 
-  out_file="$TMP_DIR/$(printf '%06d' "$i")_${date}.nc"
-  echo "Remapping ${date}/${INPUT_FILENAME} -> $(basename "$out_file")"
-  if [[ "$FORCE_SETGRID" == "1" ]]; then
-    if ! cdo -L "${REMAP_METHOD},${TARGET_GRID}" -setgrid,"${SOURCE_GRID}" "$in_file" "$out_file"; then
-      echo "setgrid remap failed for $in_file; retrying direct remap without setgrid"
-      rm -f "$out_file"
-      cdo -L "${REMAP_METHOD},${TARGET_GRID}" "$in_file" "$out_file"
-    fi
-  else
-    if ! cdo -L "${REMAP_METHOD},${TARGET_GRID}" "$in_file" "$out_file"; then
-      echo "Direct remap failed for $in_file; retrying with SOURCE_GRID=$SOURCE_GRID"
-      rm -f "$out_file"
-      cdo -L "${REMAP_METHOD},${TARGET_GRID}" -setgrid,"${SOURCE_GRID}" "$in_file" "$out_file"
-    fi
+  # Detect precipitation variable from the first input file
+  first_source_root="${entries[0]%|*}"
+  first_date="${entries[0]#*|}"
+  first_file="$first_source_root/$first_date/$INPUT_FILENAME"
+  if [[ ! -f "$first_file" ]]; then
+    echo "Error: first input file not found: $first_file" >&2
+    exit 1
   fi
-  remapped_files+=("$out_file")
-done
+  ncks_header="$TMP_DIR/ncks_header.txt"
+  ncks -m "$first_file" > "$ncks_header" 2>&1 || true
+  precip_var=$(awk '
+    /^[[:space:]]*(float|double|short|int|byte|char)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*\(/ {
+      v=$2; sub(/\(.*/, "", v); gsub(/;/, "", v);
+      if (v != "time" && v != "lon" && v != "lat" && v != "percentile" && v != "prate_threshold") {
+        print v; exit;
+      }
+    }
+  ' "$ncks_header")
+  if [[ -z "$precip_var" ]]; then
+    echo "Error: unable to detect precipitation variable in $first_file" >&2
+    cat "$ncks_header" >&2
+    exit 1
+  fi
+  echo "Detected precipitation variable: $precip_var"
 
-final_file="$OUT_DIR/precip_${date1}_${date2}.nc"
+  # Build ncap2 expression: compute one masked variable per threshold in a single pass.
+  # p0 = precip*(precip >= t0), p1 = precip*(precip >= t1), ...
+  # This avoids running ncap2 once per threshold per file.
+  ncap_expr=""
+  for ((ip=0; ip<nthreshold; ip++)); do
+    ncap_expr+="p${ip}=${precip_var}*(${precip_var}>=${tvals_arr[$ip]});"
+  done
 
-echo "Concatenating ${#remapped_files[@]} files -> $(basename "$final_file")"
-ncrcat "${remapped_files[@]}" "$final_file"
+  # Initialise per-threshold arrays to collect remapped per-date files
+  for ((ip=0; ip<nthreshold; ip++)); do
+    declare -a "thresh_files_${ip}=()"
+  done
 
-# Daily aggregation: one-pass step to enforce daily means on concatenated output.
-# IMPORTANT: Use -daymean instead of dayavg to preserve first-of-day timestamp
-# (consistent with Fortran compute_work_async.f90 which uses floor(time) grouping).
-DAILY_AGGREGATE="${DAILY_AGGREGATE:-1}"
-if [[ "$DAILY_AGGREGATE" == "1" ]]; then
-  echo "Computing daily aggregates from concatenated output (preserving first-of-day timestamps)"
-  temp_daily="$final_file.daily.tmp"
-  # -daymean groups by calendar day and selects first timestep of each day.
-  # This aligns with the Fortran program behavior.
-  cdo -L -daymean "$final_file" "$temp_daily"
-  mv "$temp_daily" "$final_file"
-  echo "Output is now daily-aggregated with first-of-day timestamps: $final_file"
+  # Process each input file: mask → daily aggregate → remap
+  nentries=${#entries[@]}
+  for i in "${!entries[@]}"; do
+    source_root="${entries[$i]%|*}"
+    date="${entries[$i]#*|}"
+    in_file="$source_root/$date/$INPUT_FILENAME"
+
+    if [[ ! -d "$source_root/$date" ]]; then
+      echo "Error: source directory does not exist: $source_root/$date" >&2
+      exit 1
+    fi
+    if [[ ! -f "$in_file" ]]; then
+      echo "Error: input file not found: $in_file" >&2
+      exit 1
+    fi
+
+    echo "[$((i+1))/$nentries] Processing ${date}/${INPUT_FILENAME}"
+
+    # Step 1: apply all threshold masks in one ncap2 pass → multi-variable file
+    masked="$TMP_DIR/masked_$(printf '%06d' "$i").nc"
+    if ! ncap2 -O -s "$ncap_expr" "$in_file" "$masked" 2>&1; then
+      echo "Error: ncap2 masking failed for $in_file" >&2
+      exit 1
+    fi
+    # Drop the original precip variable; keep only p0..p(N-1)
+    if ! ncks -O -x -v "${precip_var}" "$masked" "$masked" 2>&1; then
+      echo "Error: ncks drop of ${precip_var} failed for $in_file" >&2
+      exit 1
+    fi
+
+    # Step 2: daily aggregate on native grid
+    daily="$TMP_DIR/daily_$(printf '%06d' "$i").nc"
+    if ! cdo -s -L -daymean "$masked" "$daily" 2>&1; then
+      echo "Error: cdo -daymean failed for $in_file" >&2
+      exit 1
+    fi
+    rm -f "$masked"
+
+    # Step 3: remap to target grid
+    remapped="$TMP_DIR/remapped_$(printf '%06d' "$i").nc"
+    if [[ "$FORCE_SETGRID" == "1" ]]; then
+      if ! cdo -s -L "${REMAP_METHOD},${TARGET_GRID}" -setgrid,"${SOURCE_GRID}" \
+          "$daily" "$remapped" 2>&1; then
+        echo "setgrid remap failed for $date; retrying without setgrid"
+        rm -f "$remapped"
+        if ! cdo -s -L "${REMAP_METHOD},${TARGET_GRID}" "$daily" "$remapped" 2>&1; then
+          echo "Error: both remap attempts failed for $date" >&2
+          exit 1
+        fi
+      fi
+    else
+      if ! cdo -s -L "${REMAP_METHOD},${TARGET_GRID}" "$daily" "$remapped" 2>&1; then
+        echo "Direct remap failed for $date; retrying with setgrid"
+        rm -f "$remapped"
+        if ! cdo -s -L "${REMAP_METHOD},${TARGET_GRID}" -setgrid,"${SOURCE_GRID}" \
+            "$daily" "$remapped" 2>&1; then
+          echo "Error: both remap attempts failed for $date" >&2
+          exit 1
+        fi
+      fi
+    fi
+    rm -f "$daily"
+
+    # Record this remapped file for each threshold
+    for ((ip=0; ip<nthreshold; ip++)); do
+      ref="thresh_files_${ip}[@]"
+      eval "thresh_files_${ip}+=('$remapped')"
+    done
+  done
+
+  # For each threshold: extract its variable from all remapped files, concat, rename to 'precip'
+  per_thresh_concat=()
+  for ((ip=0; ip<nthreshold; ip++)); do
+    pval="${pvals_arr[$ip]}"
+    tval="${tvals_arr[$ip]}"
+    echo "Threshold $((ip+1))/$nthreshold: extracting p${ip} (percentile=$pval threshold=$tval)"
+
+    ref="thresh_files_${ip}[@]"
+    mapfile -t tfiles < <(printf '%s\n' "${!ref}" | sort -u)
+
+    # Extract just this threshold's variable from every remapped file, then concat
+    extracted_files=()
+    for f in "${tfiles[@]}"; do
+      ext="$TMP_DIR/ext_p${ip}_$(basename "$f")"
+      if ! ncks -O -v "p${ip}" "$f" "$ext" 2>&1; then
+        echo "Error: ncks extraction of p${ip} failed for $f" >&2
+        exit 1
+      fi
+      extracted_files+=("$ext")
+    done
+
+    concat_thresh="$TMP_DIR/concat_thresh_${ip}.nc"
+    if ! ncrcat -O "${extracted_files[@]}" "$concat_thresh" 2>&1; then
+      echo "Error: ncrcat failed for threshold $ip" >&2
+      exit 1
+    fi
+    # Clean up extracted files
+    rm -f "${extracted_files[@]}"
+
+    # Rename p${ip} → precip so ncecat sees the same variable name in every file
+    if ! ncrename -O -v "p${ip},precip" "$concat_thresh" 2>&1; then
+      echo "Error: ncrename failed for threshold $ip" >&2
+      exit 1
+    fi
+
+    per_thresh_concat+=("$concat_thresh")
+  done
+
+  # Clean up all remapped per-date files (shared across thresholds)
+  for i in "${!entries[@]}"; do
+    rm -f "$TMP_DIR/remapped_$(printf '%06d' "$i").nc"
+  done
+
+  # Stack per-threshold files along a new 'percentile' dimension
+  final_file="$OUT_DIR/precip_${date1}_${date2}.nc"
+  stacked="$TMP_DIR/precip_stacked.nc"
+  echo "Stacking $nthreshold per-threshold files along percentile dimension (ncecat)"
+  if ! ncecat -O "${per_thresh_concat[@]}" "$stacked" 2>&1; then
+    echo "Error: ncecat failed to stack per-threshold files" >&2
+    exit 1
+  fi
+  rm -f "${per_thresh_concat[@]}"
+
+  # ncecat names the new outer dimension 'record'; rename to 'percentile'
+  ncrename -O -d record,percentile "$stacked"
+
+  # Assign percentile coordinate values
+  pvals_ncap="{$(IFS=','; echo "${pvals_arr[*]}")}"
+  ncap2 -O -s "percentile[percentile]=${pvals_ncap};" "$stacked" "$final_file"
+  rm -f "$stacked"
+
+  ncatted -O \
+    -a long_name,percentile,o,c,"precipitation percentile threshold" \
+    -a units,percentile,o,c,"1" \
+    -a long_name,precip,o,c,"precipitation rate filtered by precipitation threshold" \
+    -a units,precip,o,c,"kg m-2 s-1" \
+    -a coordinates,precip,o,c,"percentile lon lat" \
+    -a time_stat,precip,o,c,"daily_mean" \
+    -a time_aggregation,precip,o,c,"mean over native timesteps within each day" \
+    -a threshold_file,global,o,c,"$THRESHOLD_FILE" \
+    -a daily_stat,global,o,c,"mean" \
+    -a daily_aggregation,global,o,c,"mean over native timesteps within each day" \
+    "$final_file"
+
+  while read -r pval tval; do
+    ptxt=$(awk -v p="$pval" 'BEGIN {printf "%.4f", 100.0*p}')
+    packed=$(echo "$ptxt" | sed -E 's/0+$//; s/\.$//; s/\.//g')
+    ncatted -O -a "p${packed}_threshold,global,o,d,${tval}" "$final_file"
+  done < <(awk 'NF && $1 !~ /^#/ {print $1, $2}' "$THRESHOLD_FILE")
+
+  echo "Thresholded percentile output written: $final_file"
+
 else
-  echo "Daily aggregation skipped (DAILY_AGGREGATE=0): $final_file"
+  # Non-thresholded workflow: remap each file → concat → daily aggregate
+  echo "Non-thresholded workflow: remapping each file individually"
+  remapped_files=()
+  for i in "${!entries[@]}"; do
+    source_root="${entries[$i]%|*}"
+    date="${entries[$i]#*|}"
+    source_dir="$source_root/$date"
+    in_file="$source_dir/$INPUT_FILENAME"
+
+    if [[ ! -d "$source_dir" ]]; then
+      echo "Error: source directory does not exist: $source_dir" >&2
+      exit 1
+    fi
+
+    if [[ ! -f "$in_file" ]]; then
+      echo "Error: input file not found: $in_file" >&2
+      exit 1
+    fi
+
+    out_file="$TMP_DIR/$(printf '%06d' "$i")_${date}.nc"
+    echo "[$((i+1))/${#entries[@]}] Remapping ${date}/${INPUT_FILENAME} -> $(basename "$out_file")"
+    if [[ "$FORCE_SETGRID" == "1" ]]; then
+      if ! cdo -L "${REMAP_METHOD},${TARGET_GRID}" -setgrid,"${SOURCE_GRID}" "$in_file" "$out_file" 2>&1; then
+        echo "setgrid remap failed for $in_file; retrying direct remap without setgrid"
+        rm -f "$out_file"
+        if ! cdo -L "${REMAP_METHOD},${TARGET_GRID}" "$in_file" "$out_file" 2>&1; then
+          echo "Error: both remap attempts failed for $in_file" >&2
+          exit 1
+        fi
+      fi
+    else
+      if ! cdo -L "${REMAP_METHOD},${TARGET_GRID}" "$in_file" "$out_file" 2>&1; then
+        echo "Direct remap failed for $in_file; retrying with SOURCE_GRID=$SOURCE_GRID"
+        rm -f "$out_file"
+        if ! cdo -L "${REMAP_METHOD},${TARGET_GRID}" -setgrid,"${SOURCE_GRID}" "$in_file" "$out_file" 2>&1; then
+          echo "Error: both remap attempts failed for $in_file" >&2
+          exit 1
+        fi
+      fi
+    fi
+    remapped_files+=("$out_file")
+  done
+
+  final_file="$OUT_DIR/precip_${date1}_${date2}.nc"
+  concat_file="$TMP_DIR/precip_concat_${date1}_${date2}.nc"
+
+  echo "Concatenating ${#remapped_files[@]} remapped files"
+  if ! ncrcat "${remapped_files[@]}" "$concat_file" 2>&1; then
+    echo "Error: ncrcat failed to concatenate remapped files" >&2
+    exit 1
+  fi
+  echo "Concatenation complete: $concat_file"
+
+  # Daily aggregation: one-pass step to enforce daily means on concatenated output.
+  # IMPORTANT: Use -daymean instead of dayavg to preserve first-of-day timestamp
+  # (consistent with Fortran compute_work_async.f90 which uses floor(time) grouping).
+  DAILY_AGGREGATE="${DAILY_AGGREGATE:-1}"
+  if [[ "$DAILY_AGGREGATE" == "1" ]]; then
+    echo "Computing daily aggregates from concatenated output (preserving first-of-day timestamps)"
+    temp_daily="$TMP_DIR/precip_daily_${date1}_${date2}.nc"
+    if ! cdo -L -daymean "$concat_file" "$temp_daily" 2>&1; then
+      echo "Error: cdo -daymean failed" >&2
+      exit 1
+    fi
+    cp "$temp_daily" "$final_file"
+    echo "Output is daily-aggregated with first-of-day timestamps: $final_file"
+  else
+    echo "Daily aggregation skipped (DAILY_AGGREGATE=0)"
+    cp "$concat_file" "$final_file"
+  fi
 fi
 
-echo "Done: $final_file"
