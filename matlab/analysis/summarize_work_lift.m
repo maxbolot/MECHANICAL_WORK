@@ -1,4 +1,5 @@
 function summarize_work_lift(summary)
+    % Prints formatted summary statistics for work/lift diagnostics.
     fprintf('\n');
     fprintf('=== RESULTS ===\n');
     fprintf('Region: %s\n', summary.region_label);

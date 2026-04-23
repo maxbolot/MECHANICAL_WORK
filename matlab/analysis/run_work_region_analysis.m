@@ -1,9 +1,11 @@
 function run_work_region_analysis(cfg)
+    % Computes unthresholded regional work/lift means and time-series plots.
     ncfile = cfg.scenario.standard_ncfile;
     ensure_input_exists(ncfile);
 
     fprintf('Reading NetCDF file: %s\n', ncfile);
     [lat, lon, time] = read_standard_coordinates(ncfile);
+    fprintf('File dimensions: lat=%d, lon=%d, time=%d\n', length(lat), length(lon), length(time));
 
     mask = build_region_mask(lat, lon, cfg.region);
     fprintf('%s\n', mask.selection_message);
@@ -57,29 +59,4 @@ function run_work_region_analysis(cfg)
         'title_prefix', cfg.region.title_label, ...
         'title_suffix', '', ...
         'legend_labels', {empty_legend}));
-end
-
-function ensure_input_exists(ncfile)
-    if ~isfile(ncfile)
-        error('File not found: %s', ncfile);
-    end
-end
-
-function [lat, lon, time] = read_standard_coordinates(ncfile)
-    try
-        lat = ncread(ncfile, 'lat');
-        lon = ncread(ncfile, 'lon');
-        time = ncread(ncfile, 'time');
-        fprintf('File dimensions: lat=%d, lon=%d, time=%d\n', length(lat), length(lon), length(time));
-    catch ME
-        error('Error reading dimensions: %s', ME.message);
-    end
-end
-
-function values = read_required_var(ncfile, varname)
-    try
-        values = ncread(ncfile, varname);
-    catch ME
-        error('Error reading %s variable: %s\nAvailable variables: %s', varname, ME.message, get_available_vars(ncfile));
-    end
 end

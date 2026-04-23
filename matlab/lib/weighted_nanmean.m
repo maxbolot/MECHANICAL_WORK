@@ -1,4 +1,5 @@
 function avg = weighted_nanmean(values, weights)
+    % Computes a weighted mean while excluding non-finite samples.
     values = double(values(:));
     weights = double(weights(:));
 

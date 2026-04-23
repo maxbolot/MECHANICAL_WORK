@@ -1,4 +1,5 @@
 function mask = build_region_mask(lat, lon, region)
+    % Builds lon/lat index masks and latitude weights for configured regions.
     lat_values = double(lat(:));
     lon_values = double(lon(:));
     lon_wrapped = mod(lon_values, 360);

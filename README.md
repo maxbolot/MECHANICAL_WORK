@@ -8,7 +8,7 @@ The project is organized as a pipeline:
 2. Launcher scripts run those kernels over many dates (typically via Slurm arrays).
 3. Optional preprocessing scripts remap native high-resolution fields onto the analysis grid.
 4. Post-processing scripts validate time axes and concatenate outputs.
-5. MATLAB scripts produce regional weighted averages and comparison plots.
+5. MATLAB entry wrappers call analysis runners backed by the shared lib API to produce diagnostics and plots.
 6. Publication submodules manage paper-specific TeX/Bib and final figure assets.
 
 ## Project Structure
@@ -37,13 +37,15 @@ The project is organized as a pipeline:
     - `check_work_time_axis.sh`: checks timestamp drift in per-date work files; optionally removes drifted files.
     - `check_hist_time_axis.sh`: checks timestamp drift in per-date histogram files; optionally removes drifted files.
     - `coarse_grain_and_concat_work.sh`: remaps per-date work files to a target grid, then concatenates into a single date-range file.
+    - `coarse_grain_and_concat_precip.sh`: remaps per-date precipitation files, concatenates to a date-range product, and can apply daily aggregation.
     - `concat_histograms.sh`: concatenates per-date histogram files into a single date-range file.
 - `python/`
   - `make_ea_grid.py`: generates the CDO equal-area grid description file (`output/grids/ea_25km_grid.txt`) required by `script/preprocessing/ea_to_0.25_array.sh`.
 - `matlab/`
-  - Region-specific analysis scripts for control and warming simulations.
-  - `compute_and_plot_work_lift_all_regions.m`: combined multi-region summary + plotting script.
-  - `lib/`: shared MATLAB helpers.
+  - `entries/`: thin wrapper scripts that define config and call runners.
+  - `analysis/`: runner/orchestration scripts.
+  - `lib/`: shared MATLAB API helpers.
+  - `presets/`: scenario and region presets used by entries/runners.
 - `logs/`: Slurm and run logs.
 - `publication/`
   - `paper_dissipation/`: paper-specific manuscript and figure workspace tracked as a Git submodule.
@@ -289,7 +291,20 @@ These checks do not modify files unless `REMOVE_SOURCE_FILES=1` is explicitly se
 - Concatenates remapped files with `ncrcat` into a date-range product:
   - `work_START_END.nc`
 
-### 4) Concatenate Histograms
+### 4) Remap + Concatenate Precipitation Files
+
+`script/postprocessing/coarse_grain_and_concat_precip.sh`:
+
+- Collects per-date precipitation files from simulation-aware part1/part2 source roots.
+- Remaps each file with CDO (default `remapcon,r360x180`, with `setgrid` fallback logic).
+- Concatenates remapped files with `ncrcat` into:
+  - `precip_START_END.nc`
+- Optionally enforces daily aggregation (`DAILY_AGGREGATE=1` by default) using `cdo -daymean` while preserving first-of-day timestamps.
+
+Use this step when analyses require precipitation explicitly (for example Hp/precip diagnostics, Hp delta maps, and decomposition terms involving `P`).
+For work/lift-only analyses, this step is optional.
+
+### 5) Concatenate Histograms
 
 `script/postprocessing/concat_histograms.sh`:
 
@@ -313,61 +328,75 @@ python python/make_ea_grid.py
 
 ## MATLAB Analysis Layer
 
-MATLAB scripts consume concatenated products (`work_START_END.nc`) and compute regionally averaged diagnostics.
+MATLAB consumes concatenated NetCDF products (`work_START_END.nc`, `precip_START_END.nc`, `hist_START_END.nc`) through a three-layer structure:
 
-### Shared Helper Library (`matlab/lib`)
+1. Thin wrapper entries in `matlab/entries`
+2. Runner/orchestration scripts in `matlab/analysis`
+3. Reusable API helpers in `matlab/lib`
 
-- `compute_time_weights_control.m`
-- `compute_time_weights_plus4k.m`
-- `weighted_nanmean.m`
-- `build_time_axis.m`
-- `read_var_as_lon_lat_time.m`
-- plus utility helpers
+### Thin Wrapper Entries (`matlab/entries`)
 
-### Time-Weighting and Missing-Step Logic
+Entry scripts are intentionally minimal. They:
 
-Both weighting helpers:
+1. Set paths (`lib`, `analysis`, `presets` when needed).
+2. Build a small `cfg` struct (scenario, mode, plotting switches, dates, thresholds).
+3. Call one analysis runner.
 
-- Convert time to MATLAB datenum robustly across unit conventions.
-- Assign per-sample duration weights according to simulation schedule.
-- Detect missing expected outputs.
+Examples:
 
-Current robust missing-step strategy:
+- `matlab/entries/plot_work_ratio_lonlat_map.m`
+- `matlab/entries/plot_hp_precip_delta_lonlat_map.m`
+- `matlab/entries/compute_and_plot_work_lift_all_regions.m`
+- `matlab/entries/compute_histogram_precip_work_analysis_control.m`
+- `matlab/entries/compute_histogram_precip_work_analysis_plus4k.m`
 
-1. Prefer parsing canonical input dates from global `history` (ncrcat command paths).
-2. Count missing expected start dates against schedule.
-3. Fallback to timestamp-axis matching when history is unavailable.
+### Runner Scripts (`matlab/analysis`)
 
-This avoids false missing counts caused by midpoint phase shifts at cadence transitions.
+Runners contain workflow orchestration and plotting composition. They:
 
-### Region Scripts
+1. Apply defaults to `cfg`.
+2. Read inputs using lib API helpers.
+3. Execute scenario/region logic.
+4. Produce summaries and figures.
+5. Return structured outputs when useful for checks/regression.
 
-Each region has control and warming variants, for example:
+Representative runners:
 
-- global
-- tropics
-- maritime continent
-- northern midlatitudes
-- southern midlatitudes
-- southern poles
+- `matlab/analysis/run_work_ratio_lonlat_map_analysis.m`
+- `matlab/analysis/run_hp_precip_delta_lonlat_map_analysis.m`
+- `matlab/analysis/run_work_lift_all_regions_analysis.m`
+- `matlab/analysis/run_histogram_precip_work_analysis.m`
 
-Each script typically:
+### Lib API (`matlab/lib`)
 
-1. Reads concatenated work/lift fields.
-2. Applies latitude/longitude mask.
-3. Computes area-weighted spatial means (`cos(lat)`).
-4. Applies schedule-aware weighted temporal mean.
-5. Reports work, lift, and lift/work ratio.
-6. Plots time series.
+`matlab/lib` is the shared API surface used by all runners. It centralizes:
 
-### Combined Multi-Region Script
+- NetCDF input validation and reading helpers
+- Dimension reordering/orientation helpers
+- Time-axis normalization and datetime conversion helpers
+- Time-weighting and missing-step counting helpers
+- Shared weighted averaging and histogram metric helpers
+- Region/threshold reusable computation helpers
 
-`matlab/compute_and_plot_work_lift_all_regions.m`:
+Examples:
 
-- Processes both control and warming files.
-- Computes region-level summary metrics.
-- Produces stacked-bar comparison of `lift` and `ke = work - lift`.
-- Prints summary table including detected missing timesteps.
+- `normalize_time_axis_to_datenum.m`, `netcdf_time_to_datetime.m`, `build_time_axis.m`
+- `compute_time_weights_control.m`, `compute_time_weights_plus4k.m`, `compute_time_weights_from_days.m`
+- `read_var_as_lon_lat_time.m`, `read_lon_lat_time_from_var.m`, `read_tropical_histogram_diagnostics.m`
+- `weighted_nanmean.m`, `weighted_mean_over_time_map.m`, `weighted_time_mean_rows.m`
+
+### Time-Weighting Behavior
+
+Current weighting assumes a uniform 1-day cadence across supported products.
+Missing-step counts are computed from the normalized daily time axis.
+
+### Roadmap: Lib Extraction
+
+The lib API is being shaped as a stable shared layer and is expected to be detached into a separate project in the future. The goal is to:
+
+1. Keep wrappers and runners repository-local.
+2. Publish versioned reusable MATLAB APIs for NetCDF/time/weighting/stat utilities.
+3. Reduce duplication across analysis repositories and publication workflows.
 
 ## Typical End-to-End Flow
 
@@ -377,8 +406,9 @@ Each script typically:
 4. Optional: run `script/preprocessing/ea_to_0.25_array.sh` if native-to-analysis-grid preprocessing is needed.
 5. Run `script/postprocessing/check_work_time_axis.sh` and `script/postprocessing/check_hist_time_axis.sh` to detect drift before concatenation.
 6. Run `script/postprocessing/coarse_grain_and_concat_work.sh` to produce concatenated `work_START_END.nc`.
-7. Optionally run `script/postprocessing/concat_histograms.sh` for histogram products.
-8. Run MATLAB regional scripts or the all-regions summary script.
+7. Optionally run `script/postprocessing/coarse_grain_and_concat_precip.sh` to produce concatenated `precip_START_END.nc` for precipitation-coupled analyses.
+8. Optionally run `script/postprocessing/concat_histograms.sh` for histogram products.
+9. Run MATLAB entry scripts from `matlab/entries` (regional, map, histogram, or all-regions summaries).
 
 ## Publication and Manuscript Workflow
 

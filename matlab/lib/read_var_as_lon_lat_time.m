@@ -1,4 +1,5 @@
 function [var_out, dim_names] = read_var_as_lon_lat_time(ncfile, varname)
+    % Reads and reorders a variable to [lon, lat, time] based on named dimensions.
     info = ncinfo(ncfile, varname);
     dim_names = lower(string({info.Dimensions.Name}));
 

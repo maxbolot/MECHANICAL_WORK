@@ -1,4 +1,5 @@
 function plot_work_lift_timeseries(plot_cfg)
+    % Draws work/lift/ratio timeseries panels with consistent styling.
     figure('Position', [100, 100, 1100, 700]);
     set(gcf, 'color', 'w');
     set(gcf, 'WindowStyle', 'docked');
