@@ -51,9 +51,17 @@ case "$SIMULATION" in
     default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv_prate_thresholded"
     file_prefix="work_prate_threshold_"
     ;;
+  control_prate_thresholded_by_lat_band)
+    default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_prate_thresholded_by_lat_band"
+    file_prefix="work_prate_threshold_by_lat_band_"
+    ;;
+  warming_prate_thresholded_by_lat_band)
+    default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv_prate_thresholded_by_lat_band"
+    file_prefix="work_prate_threshold_by_lat_band_"
+    ;;
   *)
     echo "Error: unsupported SIMULATION='$SIMULATION'." >&2
-    echo "Use one of: control, warming, control_prate_thresholded, warming_prate_thresholded" >&2
+    echo "Use one of: control, warming, control_prate_thresholded, warming_prate_thresholded, control_prate_thresholded_by_lat_band, warming_prate_thresholded_by_lat_band" >&2
     exit 1
     ;;
 esac

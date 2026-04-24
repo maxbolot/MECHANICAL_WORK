@@ -2,6 +2,8 @@
 
 End-to-end workflow for computing mechanical work diagnostics from FV3 coarse-grained fields, post-processing outputs into analysis-ready products, and generating regional climatological summaries in MATLAB.
 
+Notebook content under `notebooks/` is provided for dissemination and sharing; MATLAB remains the authoritative analysis stack, and there is no roadmap to move away from MATLAB workflows.
+
 The project is organized as a pipeline:
 
 1. Low-level Fortran kernels compute per-date work products.
@@ -335,6 +337,18 @@ Run:
 python python/make_ea_grid.py
 ```
 
+## Notebook Layer (Dissemination)
+
+The `notebooks/` folder contains Python/Jupyter views of selected analyses intended for dissemination, communication, and easier sharing with collaborators.
+
+Important scope note:
+
+1. Notebooks are a dissemination layer, not a replacement for the production MATLAB analysis stack.
+2. There is currently no roadmap to move away from MATLAB for analysis workflows.
+3. MATLAB (`matlab/entries`, `matlab/analysis`, `matlab/lib`) remains the authoritative analysis implementation.
+
+Translated Python helpers used by notebooks are stored under `python/translated_from_matlab/` to keep notebook orchestration lightweight and reusable.
+
 ## MATLAB Analysis Layer
 
 MATLAB consumes concatenated NetCDF products (`work_START_END.nc`, `precip_START_END.nc`, `hist_START_END.nc`) through a three-layer structure:
@@ -418,6 +432,7 @@ The lib API is being shaped as a stable shared layer and is expected to be detac
 7. Optionally run `script/postprocessing/coarse_grain_and_concat_precip.sh` to produce concatenated `precip_START_END.nc` for precipitation-coupled analyses.
 8. Optionally run `script/postprocessing/concat_histograms.sh` for histogram products.
 9. Run MATLAB entry scripts from `matlab/entries` (regional, map, histogram, or all-regions summaries).
+10. Optionally run dissemination notebooks from `notebooks/` for shareable views of selected analyses.
 
 ## Publication and Manuscript Workflow
 
