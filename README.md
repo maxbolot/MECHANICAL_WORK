@@ -295,11 +295,20 @@ These checks do not modify files unless `REMOVE_SOURCE_FILES=1` is explicitly se
 
 `script/postprocessing/coarse_grain_and_concat_precip.sh`:
 
-- Collects per-date precipitation files from simulation-aware part1/part2 source roots.
-- Remaps each file with CDO (default `remapcon,r360x180`, with `setgrid` fallback logic).
+- Supports six simulation switches:
+  - `control`
+  - `warming`
+  - `control_prate_thresholded`
+  - `warming_prate_thresholded`
+  - `control_prate_thresholded_by_lat_band`
+  - `warming_prate_thresholded_by_lat_band`
+- Uses two input modes under one interface:
+  - list-driven mode for `control`/`warming` from part1/part2 source roots and date lists.
+  - directory mode for thresholded outputs from `work_prate_threshold*.nc` files.
+- Extracts precipitation into a unified variable name `precip` across all modes.
+- Remaps each file with CDO (default `remapcon,r360x180`).
 - Concatenates remapped files with `ncrcat` into:
   - `precip_START_END.nc`
-- Optionally enforces daily aggregation (`DAILY_AGGREGATE=1` by default) using `cdo -daymean` while preserving first-of-day timestamps.
 
 Use this step when analyses require precipitation explicitly (for example Hp/precip diagnostics, Hp delta maps, and decomposition terms involving `P`).
 For work/lift-only analyses, this step is optional.
