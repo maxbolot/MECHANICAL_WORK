@@ -60,8 +60,10 @@ program compute_work_async_prate_threshold_by_lat_band
     double precision, dimension(:,:), allocatable :: prate_thresholds_2d   ! precipitation thresholds (lat_band, percentile) loaded from ASCII
 
     double precision, dimension(:,:,:,:), allocatable :: pr_buffer         ! precipitation rate
+    double precision, dimension(:,:,:,:,:), allocatable :: precip_out_buffer ! thresholded precip output buffer
     double precision, dimension(:,:,:,:,:), allocatable :: work_out_buffer ! thresholded work output buffer
     double precision, dimension(:,:,:,:,:), allocatable :: lift_out_buffer ! thresholded lift output buffer
+    double precision, dimension(:,:,:,:), allocatable :: precip_accum_full ! full-grid time accumulation of precip by percentile
     double precision, dimension(:,:,:,:), allocatable :: work_accum_full   ! full-grid time accumulation of work by percentile
     double precision, dimension(:,:,:,:), allocatable :: lift_accum_full   ! full-grid time accumulation of lift by percentile
 
@@ -100,7 +102,7 @@ program compute_work_async_prate_threshold_by_lat_band
     integer :: varid_omt, varid_omqv, varid_omqw, varid_omqr, varid_omqi, varid_omqs, varid_omqg, varid_pr
     integer :: varid_lon, varid_lat, varid_time
     integer :: varid_out_pct, varid_out_lon, varid_out_lat, varid_out_time
-    integer :: varid_work_out, varid_lift_out, varid_count_out
+    integer :: varid_precip_out, varid_work_out, varid_lift_out, varid_count_out
 
     character(len=255) :: path_dz, path_temp, path_omega, path_qv, path_qw, path_qr, path_qi, path_qs, path_qg
     character(len=255) :: path_omt, path_omqv, path_omqw, path_omqr, path_omqi, path_omqs, path_omqg, path_pr
@@ -166,13 +168,16 @@ program compute_work_async_prate_threshold_by_lat_band
     allocate(time_vals(nt))
 
     allocate(pr_buffer(nx, chunk_size, 1, nbuf))
+    allocate(precip_out_buffer(npercentiles, nx, chunk_size, 1, nbuf))
     allocate(work_out_buffer(npercentiles, nx, chunk_size, 1, nbuf))
     allocate(lift_out_buffer(npercentiles, nx, chunk_size, 1, nbuf))
     allocate(count_out_buffer(npercentiles, nx, chunk_size, 1, nbuf))
 
+    allocate(precip_accum_full(npercentiles, nx, ny, nt))
     allocate(work_accum_full(npercentiles, nx, ny, nt))
     allocate(lift_accum_full(npercentiles, nx, ny, nt))
     allocate(count_accum_full(npercentiles, nx, ny, nt))
+    precip_accum_full = 0.0d0
     work_accum_full = 0.0d0
     lift_accum_full = 0.0d0
     count_accum_full = 0.0d0
@@ -257,6 +262,14 @@ program compute_work_async_prate_threshold_by_lat_band
     call check(nf90_put_att(ncid_work_out, varid_out_time, 'units', trim(time_units)))
     call check(nf90_put_att(ncid_work_out, varid_out_time, 'calendar', trim(time_calendar)))
     call check(nf90_put_att(ncid_work_out, varid_out_time, 'axis', 'T'))
+
+    call check(nf90_def_var(ncid_work_out, 'precip', nf90_double, (/dimid_out_pct, dimid_out_lon, dimid_out_lat, dimid_out_time/), varid_precip_out))
+    call check(nf90_put_att(ncid_work_out, varid_precip_out, 'long_name', 'precipitation rate filtered by precipitation threshold'))
+    call check(nf90_put_att(ncid_work_out, varid_precip_out, 'units', 'kg m-2 s-1'))
+    call check(nf90_put_att(ncid_work_out, varid_precip_out, 'coordinates', 'percentile lon lat'))
+    call check(nf90_put_att(ncid_work_out, varid_precip_out, 'time_stat', 'daily_conditional_mean'))
+    call check(nf90_put_att(ncid_work_out, varid_precip_out, 'time_aggregation', 'mean over threshold exceedance events within each day'))
+    call check(nf90_put_att(ncid_work_out, varid_precip_out, '_FillValue', -9999.0d0))
 
     call check(nf90_def_var(ncid_work_out, 'work', nf90_double, (/dimid_out_pct, dimid_out_lon, dimid_out_lat, dimid_out_time/), varid_work_out))
     call check(nf90_put_att(ncid_work_out, varid_work_out, 'long_name', 'work filtered by precipitation threshold'))
@@ -408,10 +421,12 @@ program compute_work_async_prate_threshold_by_lat_band
                     ! Threshold masking per percentile rank.
                     do ip = 1, npercentiles
                         if (pr_buffer(x,y,1,ibuf) >= prate_thresholds_2d(ilat, ip)) then
+                            precip_out_buffer(ip,x,y,1,ibuf) = pr_buffer(x,y,1,ibuf)
                             work_out_buffer(ip,x,y,1,ibuf) = work_acc
                             lift_out_buffer(ip,x,y,1,ibuf) = lift_acc
                             count_out_buffer(ip,x,y,1,ibuf) = 1.0d0   ! Mark as event for conditional mean
                         else
+                            precip_out_buffer(ip,x,y,1,ibuf) = 0.0d0
                             work_out_buffer(ip,x,y,1,ibuf) = 0.0d0
                             lift_out_buffer(ip,x,y,1,ibuf) = 0.0d0
                             count_out_buffer(ip,x,y,1,ibuf) = 0.0d0   ! Ignore in mean
@@ -422,6 +437,7 @@ program compute_work_async_prate_threshold_by_lat_band
 
             ! Accumulate into daily bins. Multiple timesteps in the same day
             ! are summed into the same iday slice.
+            precip_accum_full(:,:,ystart:ystart+chunk_size-1,iday) = precip_accum_full(:,:,ystart:ystart+chunk_size-1,iday) + precip_out_buffer(:,:,:,1,ibuf)
             work_accum_full(:,:,ystart:ystart+chunk_size-1,iday) = work_accum_full(:,:,ystart:ystart+chunk_size-1,iday) + work_out_buffer(:,:,:,1,ibuf)
             lift_accum_full(:,:,ystart:ystart+chunk_size-1,iday) = lift_accum_full(:,:,ystart:ystart+chunk_size-1,iday) + lift_out_buffer(:,:,:,1,ibuf)
             count_accum_full(:,:,ystart:ystart+chunk_size-1,iday) = count_accum_full(:,:,ystart:ystart+chunk_size-1,iday) + count_out_buffer(:,:,:,1,ibuf)
@@ -447,10 +463,12 @@ program compute_work_async_prate_threshold_by_lat_band
             do x = 1, nx
                 do ip = 1, npercentiles
                     if (count_accum_full(ip,x,y,iday) > 0.0d0) then
+                        precip_accum_full(ip,x,y,iday) = precip_accum_full(ip,x,y,iday) / count_accum_full(ip,x,y,iday)
                         work_accum_full(ip,x,y,iday) = work_accum_full(ip,x,y,iday) / count_accum_full(ip,x,y,iday)
                         lift_accum_full(ip,x,y,iday) = lift_accum_full(ip,x,y,iday) / count_accum_full(ip,x,y,iday)
                     else
                         ! Use standard NetCDF FillValue if no storms met the criteria
+                        precip_accum_full(ip,x,y,iday) = -9999.0d0
                         work_accum_full(ip,x,y,iday) = -9999.0d0
                         lift_accum_full(ip,x,y,iday) = -9999.0d0
                         ! Leave count as 0.0
@@ -460,6 +478,7 @@ program compute_work_async_prate_threshold_by_lat_band
         end do
     end do
 
+    call check(nf90_put_var(ncid_work_out, varid_precip_out, precip_accum_full(:,:,:,1:ndays), start=(/1,1,1,1/), count=(/npercentiles,nx,ny,ndays/)))
     call check(nf90_put_var(ncid_work_out, varid_work_out, work_accum_full(:,:,:,1:ndays), start=(/1,1,1,1/), count=(/npercentiles,nx,ny,ndays/)))
     call check(nf90_put_var(ncid_work_out, varid_lift_out, lift_accum_full(:,:,:,1:ndays), start=(/1,1,1,1/), count=(/npercentiles,nx,ny,ndays/)))
     call check(nf90_put_var(ncid_work_out, varid_count_out, count_accum_full(:,:,:,1:ndays), start=(/1,1,1,1/), count=(/npercentiles,nx,ny,ndays/)))
@@ -529,10 +548,10 @@ contains
             if (len_trim(line) == 0) cycle
             if (line(1:1) == '#' .or. line(1:1) == '!') then
                 if (npcols == 0) then
-                    ! Count whitespace-separated tokens after the leading comment char
-                    call count_columns(line(2:), npcols)
-                    npcols = npcols - 1  ! subtract band-label column
-                    if (npcols < 1) npcols = 0
+                    ! Count percentile columns from numeric header tokens.
+                    ! This supports both legacy format "p 0.50000" and fixed
+                    ! format "p0.50000".
+                    call count_header_percentiles(line(2:), npcols)
                 end if
                 cycle
             end if
@@ -606,6 +625,41 @@ contains
         end do
     end subroutine count_columns
 
+    ! Count numeric percentile tokens from a header line like:
+    !   lat_band p0.50000 p0.75000 ...
+    ! or legacy:
+    !   lat_band p 0.50000 p 0.75000 ...
+    subroutine count_header_percentiles(line, npct)
+        character(len=*), intent(in) :: line
+        integer, intent(out) :: npct
+
+        integer :: i, n, start, io_tok
+        character(len=64) :: tok, tnum
+        real(8) :: pval
+
+        npct = 0
+        n = len_trim(line)
+        i = 1
+        do while (i <= n)
+            do while (i <= n .and. (line(i:i) == ' ' .or. line(i:i) == achar(9))); i = i + 1; end do
+            if (i > n) exit
+            start = i
+            do while (i <= n .and. line(i:i) /= ' ' .and. line(i:i) /= achar(9)); i = i + 1; end do
+
+            tok = line(start:i-1)
+            tnum = adjustl(tok)
+            if (len_trim(tnum) <= 0) cycle
+            if ((tnum(1:1) == 'p' .or. tnum(1:1) == 'P') .and. len_trim(tnum) > 1) then
+                tnum = tnum(2:)
+            end if
+
+            read(tnum, *, iostat=io_tok) pval
+            if (io_tok == 0) then
+                if (pval >= 0.0d0 .and. pval <= 1.0d0) npct = npct + 1
+            end if
+        end do
+    end subroutine count_header_percentiles
+
     ! Parse percentile values from a header line like:
     !   lat_band p0.50000 p0.75000 p0.90000 ...
     ! The first token (lat_band label) is skipped.
@@ -613,28 +667,35 @@ contains
         character(len=*), intent(in) :: line
         real(8), intent(inout) :: percentiles(:)
 
-        integer :: i, j, n, start, ip_idx, io_tok
+        integer :: i, n, start, ip_idx, io_tok
         real(8) :: pval
-        character(len=64) :: tok
+        character(len=64) :: tok, tnum
 
         ip_idx = 0
         n = len_trim(line)
         i = 1
-        j = 0  ! token counter (skip first = band label)
         do while (i <= n)
             do while (i <= n .and. (line(i:i) == ' ' .or. line(i:i) == achar(9))); i = i + 1; end do
             if (i > n) exit
             start = i
             do while (i <= n .and. line(i:i) /= ' ' .and. line(i:i) /= achar(9)); i = i + 1; end do
+
             tok = line(start:i-1)
-            j = j + 1
-            if (j == 1) cycle  ! skip band-label column
+            tnum = adjustl(tok)
+            if (len_trim(tnum) <= 0) cycle
+
+            ! Strip leading p/P when present (handles p0.50000 format).
+            if ((tnum(1:1) == 'p' .or. tnum(1:1) == 'P') .and. len_trim(tnum) > 1) then
+                tnum = tnum(2:)
+            end if
+
+            read(tnum, *, iostat=io_tok) pval
+            if (io_tok /= 0) cycle
+            if (pval < 0.0d0 .or. pval > 1.0d0) cycle
+
             ip_idx = ip_idx + 1
             if (ip_idx > size(percentiles)) exit
-            ! Strip leading p/P character if present.
-            if (tok(1:1) == 'p' .or. tok(1:1) == 'P') tok = tok(2:)
-            read(tok, *, iostat=io_tok) pval
-            if (io_tok == 0) percentiles(ip_idx) = pval
+            percentiles(ip_idx) = pval
         end do
     end subroutine parse_header_percentiles
 

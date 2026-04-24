@@ -59,9 +59,11 @@ program compute_work_async_prate_threshold
     double precision, dimension(:), allocatable :: prate_thresholds        ! precipitation thresholds loaded from ASCII
 
     double precision, dimension(:,:,:,:), allocatable :: pr_buffer         ! precipitation rate
+    double precision, dimension(:,:,:,:,:), allocatable :: precip_out_buffer ! thresholded precip output buffer
     double precision, dimension(:,:,:,:,:), allocatable :: work_out_buffer ! thresholded work output buffer
     double precision, dimension(:,:,:,:,:), allocatable :: lift_out_buffer ! thresholded lift output buffer
     double precision, dimension(:,:,:,:,:), allocatable :: count_out_buffer ! thresholded count of timesteps exceeding threshold (for conditional mean calculation)
+    double precision, dimension(:,:,:,:), allocatable :: precip_accum_full ! full-grid time accumulation of precip by percentile
     double precision, dimension(:,:,:,:), allocatable :: work_accum_full   ! full-grid time accumulation of work by percentile
     double precision, dimension(:,:,:,:), allocatable :: lift_accum_full   ! full-grid time accumulation of lift by percentile
     double precision, dimension(:,:,:,:), allocatable :: count_accum_full  ! full-grid time accumulation of threshold exceedance count by percentile
@@ -93,7 +95,7 @@ program compute_work_async_prate_threshold
     integer :: varid_omt, varid_omqv, varid_omqw, varid_omqr, varid_omqi, varid_omqs, varid_omqg, varid_pr
     integer :: varid_lon, varid_lat, varid_time
     integer :: varid_out_pct, varid_out_lon, varid_out_lat, varid_out_time
-    integer :: varid_work_out, varid_lift_out, varid_count_out
+    integer :: varid_precip_out, varid_work_out, varid_lift_out, varid_count_out
 
     character(len=255) :: path_dz, path_temp, path_omega, path_qv, path_qw, path_qr, path_qi, path_qs, path_qg
     character(len=255) :: path_omt, path_omqv, path_omqw, path_omqr, path_omqi, path_omqs, path_omqg, path_pr
@@ -159,13 +161,16 @@ program compute_work_async_prate_threshold
     allocate(time_vals(nt))
 
     allocate(pr_buffer(nx, chunk_size, 1, nbuf))
+    allocate(precip_out_buffer(npercentiles, nx, chunk_size, 1, nbuf))
     allocate(work_out_buffer(npercentiles, nx, chunk_size, 1, nbuf))
     allocate(lift_out_buffer(npercentiles, nx, chunk_size, 1, nbuf))
     allocate(count_out_buffer(npercentiles, nx, chunk_size, 1, nbuf))
 
+    allocate(precip_accum_full(npercentiles, nx, ny, nt))
     allocate(work_accum_full(npercentiles, nx, ny, nt))
     allocate(lift_accum_full(npercentiles, nx, ny, nt))
     allocate(count_accum_full(npercentiles, nx, ny, nt))
+    precip_accum_full = 0.0d0
     work_accum_full = 0.0d0
     lift_accum_full = 0.0d0
     count_accum_full = 0.0d0
@@ -245,6 +250,14 @@ program compute_work_async_prate_threshold
     call check(nf90_put_att(ncid_work_out, varid_out_time, 'units', trim(time_units)))
     call check(nf90_put_att(ncid_work_out, varid_out_time, 'calendar', trim(time_calendar)))
     call check(nf90_put_att(ncid_work_out, varid_out_time, 'axis', 'T'))
+
+    call check(nf90_def_var(ncid_work_out, 'precip', nf90_double, (/dimid_out_pct, dimid_out_lon, dimid_out_lat, dimid_out_time/), varid_precip_out))
+    call check(nf90_put_att(ncid_work_out, varid_precip_out, 'long_name', 'precipitation rate filtered by precipitation threshold'))
+    call check(nf90_put_att(ncid_work_out, varid_precip_out, 'units', 'kg m-2 s-1'))
+    call check(nf90_put_att(ncid_work_out, varid_precip_out, 'coordinates', 'percentile lon lat'))
+    call check(nf90_put_att(ncid_work_out, varid_precip_out, 'time_stat', 'daily_conditional_mean'))
+    call check(nf90_put_att(ncid_work_out, varid_precip_out, 'time_aggregation', 'mean over threshold exceedance events within each day'))
+    call check(nf90_put_att(ncid_work_out, varid_precip_out, '_FillValue', -9999.0d0))
 
     call check(nf90_def_var(ncid_work_out, 'work', nf90_double, (/dimid_out_pct, dimid_out_lon, dimid_out_lat, dimid_out_time/), varid_work_out))
     call check(nf90_put_att(ncid_work_out, varid_work_out, 'long_name', 'work filtered by precipitation threshold'))
@@ -392,10 +405,12 @@ program compute_work_async_prate_threshold
                     ! Threshold masking per percentile rank.
                     do ip = 1, npercentiles
                         if (pr_buffer(x,y,1,ibuf) >= prate_thresholds(ip)) then
+                            precip_out_buffer(ip,x,y,1,ibuf) = pr_buffer(x,y,1,ibuf)
                             work_out_buffer(ip,x,y,1,ibuf) = work_acc
                             lift_out_buffer(ip,x,y,1,ibuf) = lift_acc
                             count_out_buffer(ip,x,y,1,ibuf) = 1.0d0
                         else
+                            precip_out_buffer(ip,x,y,1,ibuf) = 0.0d0
                             work_out_buffer(ip,x,y,1,ibuf) = 0.0d0
                             lift_out_buffer(ip,x,y,1,ibuf) = 0.0d0
                             count_out_buffer(ip,x,y,1,ibuf) = 0.0d0
@@ -406,6 +421,7 @@ program compute_work_async_prate_threshold
 
             ! Accumulate into daily bins. Multiple timesteps in the same day
             ! are summed into the same iday slice.
+            precip_accum_full(:,:,ystart:ystart+chunk_size-1,iday) = precip_accum_full(:,:,ystart:ystart+chunk_size-1,iday) + precip_out_buffer(:,:,:,1,ibuf)
             work_accum_full(:,:,ystart:ystart+chunk_size-1,iday) = work_accum_full(:,:,ystart:ystart+chunk_size-1,iday) + work_out_buffer(:,:,:,1,ibuf)
             lift_accum_full(:,:,ystart:ystart+chunk_size-1,iday) = lift_accum_full(:,:,ystart:ystart+chunk_size-1,iday) + lift_out_buffer(:,:,:,1,ibuf)
             count_accum_full(:,:,ystart:ystart+chunk_size-1,iday) = count_accum_full(:,:,ystart:ystart+chunk_size-1,iday) + count_out_buffer(:,:,:,1,ibuf)
@@ -431,9 +447,11 @@ program compute_work_async_prate_threshold
             do x = 1, nx
                 do ip = 1, npercentiles
                     if (count_accum_full(ip,x,y,iday) > 0.0d0) then
+                        precip_accum_full(ip,x,y,iday) = precip_accum_full(ip,x,y,iday) / count_accum_full(ip,x,y,iday)
                         work_accum_full(ip,x,y,iday) = work_accum_full(ip,x,y,iday) / count_accum_full(ip,x,y,iday)
                         lift_accum_full(ip,x,y,iday) = lift_accum_full(ip,x,y,iday) / count_accum_full(ip,x,y,iday)
                     else
+                        precip_accum_full(ip,x,y,iday) = -9999.0d0
                         work_accum_full(ip,x,y,iday) = -9999.0d0
                         lift_accum_full(ip,x,y,iday) = -9999.0d0
                     end if
@@ -442,6 +460,7 @@ program compute_work_async_prate_threshold
         end do
     end do
 
+    call check(nf90_put_var(ncid_work_out, varid_precip_out, precip_accum_full(:,:,:,1:ndays), start=(/1,1,1,1/), count=(/npercentiles,nx,ny,ndays/)))
     call check(nf90_put_var(ncid_work_out, varid_work_out, work_accum_full(:,:,:,1:ndays), start=(/1,1,1,1/), count=(/npercentiles,nx,ny,ndays/)))
     call check(nf90_put_var(ncid_work_out, varid_lift_out, lift_accum_full(:,:,:,1:ndays), start=(/1,1,1,1/), count=(/npercentiles,nx,ny,ndays/)))
     call check(nf90_put_var(ncid_work_out, varid_count_out, count_accum_full(:,:,:,1:ndays), start=(/1,1,1,1/), count=(/npercentiles,nx,ny,ndays/)))

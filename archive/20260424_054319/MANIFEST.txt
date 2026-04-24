@@ -1,0 +1,2 @@
+archived_at_utc	batch_mode	batch_id	source_rel	destination_rel
+2026-04-24T09:43:19Z	timestamp	20260424_054319	script/postprocessing/coarse_grain_and_concat_precip.sh	archive/20260424_054319/script/postprocessing/coarse_grain_and_concat_precip.sh

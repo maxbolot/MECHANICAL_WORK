@@ -506,6 +506,7 @@ contains
         real(8), intent(in) :: thresholds_in(:,:)
 
         integer :: unit_out, i, j, ios_out
+        character(len=32) :: ptoken
 
         if (size(percentiles) /= size(thresholds_in, 2)) then
             error stop 'write_thresholds_ascii_2d: percentile/threshold size mismatch'
@@ -524,7 +525,8 @@ contains
         ! Header with percentile values
         write(unit_out, '(A)', advance='no') '# lat_band'
         do j = 1, size(percentiles)
-            write(unit_out, '(A,F10.5)', advance='no') ' p', percentiles(j)
+            write(ptoken, '("p",F0.5)') percentiles(j)
+            write(unit_out, '(1X,A)', advance='no') trim(adjustl(ptoken))
         end do
         write(unit_out, '(A)') ''
 
