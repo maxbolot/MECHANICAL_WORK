@@ -2,7 +2,13 @@
 
 ## Overview
 
-This new workflow computes precipitation rate thresholds independently for 18 latitude bands (10-degree wide, covering -90° to +90°) and applies them per-location when computing work and lift outputs. This allows for latitude-dependent threshold analysis, capturing regional variations in precipitation distributions.
+This workflow computes precipitation rate thresholds independently for 18 latitude bands (10-degree wide, covering -90 to +90) and applies them per location when computing work/lift.
+
+Current implementation details:
+- Threshold masking is latitude-band specific.
+- `work` and `lift` are written as daily conditional means over threshold-exceedance events.
+- `event_count` is written as daily count of threshold exceedances.
+- Output is a single NetCDF file containing `work`, `lift`, and `event_count`.
 
 ## Components
 
@@ -40,27 +46,35 @@ This new workflow computes precipitation rate thresholds independently for 18 la
 
 ### 2. `compute_work_async_prate_threshold_by_lat_band.f90`
 
-**Purpose**: Compute work and lift outputs with latitude-band-specific precipitation masking.
+**Purpose**: Compute work/lift with latitude-band-specific precipitation masking and write daily conditional means plus daily event counts.
 
 **Input**:
 - Configuration namelist with:
-  - `path_hist`: path to history NetCDF file
-  - `path_work_out`: output work NetCDF file path
-  - `path_lift_out`: output lift NetCDF file path
+  - `path_dz`
+  - `path_temp`
+  - `path_omega`
+  - `path_qv`, `path_qw`, `path_qr`, `path_qi`, `path_qs`, `path_qg`
+  - `path_omt`, `path_omqv`, `path_omqw`, `path_omqr`, `path_omqi`, `path_omqs`, `path_omqg`
+  - `path_pr`
+  - `path_work_out` (single output NetCDF path)
   - `path_thresholds`: ASCII threshold file from `compute_prate_thresholds_by_lat_band`
 
 **Output**:
-- Two NetCDF files (work and lift) with dimensions:
-  - `(percentile, lon, lat, time)` where percentile has size 11 (same as threshold columns)
-- Global attributes for traceability:
-  - `threshold_band{ilat}_p{percentile}_{prate}`: all 18×11 threshold values stored as attributes
+- One NetCDF file with dimensions `(percentile, lon, lat, time)`.
+- Variables:
+  - `work`: daily conditional mean over exceedance events; `_FillValue=-9999` when `event_count=0`.
+  - `lift`: daily conditional mean over exceedance events; `_FillValue=-9999` when `event_count=0`.
+  - `event_count`: daily count of threshold exceedance events.
+- Global attributes for threshold traceability:
+  - `bandNN_p..._threshold` for all 18x11 (for example `band01_p99_threshold`).
 
 **Key logic**:
 - For each grid point:
   1. Determine latitude band based on grid-point latitude
   2. Compute work and lift using all pressure levels
-  3. Apply latitude-band-specific thresholds: `work_masked = work if (prate >= threshold[band, percentile] else 0`
-  4. Accumulate daily means per percentile
+  3. Apply latitude-band-specific thresholds
+  4. Accumulate masked sums and event counts per day
+  5. Compute conditional means as `sum(masked_values)/event_count` when `event_count > 0`
 - Parallel I/O with buffering (same async structure as `compute_work_async_prate_threshold.f90`)
 
 **Latitude band determination**:
@@ -91,15 +105,49 @@ Configuration file (`config_thresholds.nml`):
 ### 2. Compute work/lift:
 ```bash
 ./bin/compute_work_async_prate_threshold_by_lat_band config_work.nml
-# Produces: work_out.nc, lift_out.nc with latitude-band-specific masking
+# Produces: one NetCDF with work, lift, and event_count
 ```
+
+### 3. Coarse-grain and concatenate precipitation (lat-band thresholded):
+```bash
+# Control simulation
+SIMULATION=control_prate_thresholded_by_lat_band \
+  ./script/postprocessing/coarse_grain_and_concat_precip.sh
+
+# Warming simulation
+SIMULATION=warming_prate_thresholded_by_lat_band \
+  ./script/postprocessing/coarse_grain_and_concat_precip.sh
+```
+
+These modes use the lat-band threshold files automatically:
+- `output/thresholds/thresholds_control_by_lat_band.txt`
+- `output/thresholds/thresholds_warming_by_lat_band.txt`
+
+Outputs are written to:
+- `/scratch/gpfs/mbolot/results/GLOBALFV3/precip_coarse_C3072_360x180_prate_thresholded_by_lat_band`
+- `/scratch/gpfs/mbolot/results/GLOBALFV3/precip_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv_prate_thresholded_by_lat_band`
 
 Configuration file (`config_work.nml`):
 ```namelist
 &config
-  path_hist = '/path/to/history.nc'
-  path_work_out = 'work_prate_band.nc'
-  path_lift_out = 'lift_prate_band.nc'
+  path_dz = '/path/to/DZ.nc'
+  path_temp = '/path/to/temp.nc'
+  path_omega = '/path/to/omega.nc'
+  path_qv = '/path/to/qv.nc'
+  path_qw = '/path/to/qw.nc'
+  path_qr = '/path/to/qr.nc'
+  path_qi = '/path/to/qi.nc'
+  path_qs = '/path/to/qs.nc'
+  path_qg = '/path/to/qg.nc'
+  path_omt = '/path/to/omt.nc'
+  path_omqv = '/path/to/omqv.nc'
+  path_omqw = '/path/to/omqw.nc'
+  path_omqr = '/path/to/omqr.nc'
+  path_omqi = '/path/to/omqi.nc'
+  path_omqs = '/path/to/omqs.nc'
+  path_omqg = '/path/to/omqg.nc'
+  path_pr = '/path/to/prate.nc'
+  path_work_out = 'work_lift_prate_band.nc'
   path_thresholds = 'output/thresholds/thresholds_control_by_lat_band.txt'
 /
 ```
@@ -137,15 +185,24 @@ To verify correctness:
 
 2. **Output attributes** (using `ncdump`):
    ```bash
-   ncdump -h work_prate_band.nc | grep threshold_
+  ncdump -h work_lift_prate_band.nc | grep band..
    # Should show 18×11=198 global attributes
    ```
+
+3. **Output variables and stats metadata**:
+  ```bash
+  ncdump -h work_lift_prate_band.nc | egrep 'double (work|lift|event_count)|time_stat|time_aggregation'
+  ```
+  Expected:
+  - `work` and `lift` have conditional-mean metadata.
+  - `event_count` has daily-count metadata.
 
 ## Debugging
 
 - **Threshold file parsing errors**: Check ASCII file format (18 rows, first column is band index, remaining 11 columns are thresholds)
-- **Grid latitude mismatch**: Verify that `grid_yt_coarse` dimension matches history file
+- **Grid latitude mismatch**: Verify that `grid_yt_coarse` is present and consistent with the input files
 - **Band index out of range**: Ensure latitude values are in [-90, 90]; clamping is applied but may indicate data issue
+- **No-event regions**: `work/lift` are set to `_FillValue` where `event_count=0`; this is expected behavior for conditional means
 
 ## Related Programs
 

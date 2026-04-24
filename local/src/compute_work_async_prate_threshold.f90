@@ -8,6 +8,8 @@
 ! - Thresholds are read from an ASCII percentile file.
 ! - work/lift are computed once per grid point and then masked for each
 !   percentile threshold using PRATEsfc_coarse >= threshold.
+! - Daily event counts are tracked and work/lift are written as
+!   conditional means over threshold-exceedance events.
 ! - Outputs include a leading percentile dimension.
 !
 ! Buffer state convention:
@@ -59,8 +61,10 @@ program compute_work_async_prate_threshold
     double precision, dimension(:,:,:,:), allocatable :: pr_buffer         ! precipitation rate
     double precision, dimension(:,:,:,:,:), allocatable :: work_out_buffer ! thresholded work output buffer
     double precision, dimension(:,:,:,:,:), allocatable :: lift_out_buffer ! thresholded lift output buffer
+    double precision, dimension(:,:,:,:,:), allocatable :: count_out_buffer ! thresholded count of timesteps exceeding threshold (for conditional mean calculation)
     double precision, dimension(:,:,:,:), allocatable :: work_accum_full   ! full-grid time accumulation of work by percentile
     double precision, dimension(:,:,:,:), allocatable :: lift_accum_full   ! full-grid time accumulation of lift by percentile
+    double precision, dimension(:,:,:,:), allocatable :: count_accum_full  ! full-grid time accumulation of threshold exceedance count by percentile
 
     double precision :: geometric_thickness      ! geometric thickness of layer
     double precision :: work_acc, lift_acc       ! per-gridpoint unmasked work/lift
@@ -75,8 +79,6 @@ program compute_work_async_prate_threshold
     integer :: fetch_ready(nbuf)                 ! task dependency token (address only, never read)
     integer, dimension(:), allocatable :: day_index_of_t
     integer, dimension(:), allocatable :: day_first_idx
-    integer, dimension(:), allocatable :: day_step_count
-    double precision :: day_norm
     integer :: tmp_unit, ios
 
     integer :: ncid_dz, ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg
@@ -91,7 +93,7 @@ program compute_work_async_prate_threshold
     integer :: varid_omt, varid_omqv, varid_omqw, varid_omqr, varid_omqi, varid_omqs, varid_omqg, varid_pr
     integer :: varid_lon, varid_lat, varid_time
     integer :: varid_out_pct, varid_out_lon, varid_out_lat, varid_out_time
-    integer :: varid_work_out, varid_lift_out
+    integer :: varid_work_out, varid_lift_out, varid_count_out
 
     character(len=255) :: path_dz, path_temp, path_omega, path_qv, path_qw, path_qr, path_qi, path_qs, path_qg
     character(len=255) :: path_omt, path_omqv, path_omqw, path_omqr, path_omqi, path_omqs, path_omqg, path_pr
@@ -159,11 +161,14 @@ program compute_work_async_prate_threshold
     allocate(pr_buffer(nx, chunk_size, 1, nbuf))
     allocate(work_out_buffer(npercentiles, nx, chunk_size, 1, nbuf))
     allocate(lift_out_buffer(npercentiles, nx, chunk_size, 1, nbuf))
+    allocate(count_out_buffer(npercentiles, nx, chunk_size, 1, nbuf))
 
     allocate(work_accum_full(npercentiles, nx, ny, nt))
     allocate(lift_accum_full(npercentiles, nx, ny, nt))
+    allocate(count_accum_full(npercentiles, nx, ny, nt))
     work_accum_full = 0.0d0
     lift_accum_full = 0.0d0
+    count_accum_full = 0.0d0
 
     call check(nf90_inq_varid(ncid_dz, 'grid_xt_coarse', varid_lon))
     call check(nf90_inq_varid(ncid_dz, 'grid_yt_coarse', varid_lat))
@@ -188,11 +193,6 @@ program compute_work_async_prate_threshold
     ! Convert native model timesteps into contiguous day bins so outputs are
     ! aggregated by day (not by raw input timestep index).
     call build_day_groups(time_vals, time_units, day_index_of_t, day_first_idx, day_time_vals, ndays)
-    allocate(day_step_count(ndays))
-    day_step_count = 0
-    do t = 1, nt
-        day_step_count(day_index_of_t(t)) = day_step_count(day_index_of_t(t)) + 1
-    end do
 
     call check(nf90_open(trim(adjustl(path_omega)), nf90_nowrite, ncid_omega))
     call check(nf90_open(trim(adjustl(path_qv)), nf90_nowrite, ncid_qv))
@@ -214,7 +214,7 @@ program compute_work_async_prate_threshold
     call check(nf90_create(trim(adjustl(path_work_out)), nf90_clobber, ncid_work_out))
     call check(nf90_put_att(ncid_work_out, nf90_global, 'Conventions', 'CF-1.8'))
     call check(nf90_put_att(ncid_work_out, nf90_global, 'threshold_file', trim(adjustl(path_thresholds))))
-    call check(nf90_put_att(ncid_work_out, nf90_global, 'daily_stat', 'mean'))
+    call check(nf90_put_att(ncid_work_out, nf90_global, 'daily_stat', 'mixed_by_variable'))
     call check(nf90_put_att(ncid_work_out, nf90_global, 'daily_aggregation', 'mean over native timesteps within each day'))
 
     call check(nf90_def_dim(ncid_work_out, 'percentile', npercentiles, dimid_out_pct))
@@ -250,15 +250,24 @@ program compute_work_async_prate_threshold
     call check(nf90_put_att(ncid_work_out, varid_work_out, 'long_name', 'work filtered by precipitation threshold'))
     call check(nf90_put_att(ncid_work_out, varid_work_out, 'units', 'Watts per square meter'))
     call check(nf90_put_att(ncid_work_out, varid_work_out, 'coordinates', 'percentile lon lat'))
-    call check(nf90_put_att(ncid_work_out, varid_work_out, 'time_stat', 'daily_mean'))
-    call check(nf90_put_att(ncid_work_out, varid_work_out, 'time_aggregation', 'mean over native timesteps within each day'))
+    call check(nf90_put_att(ncid_work_out, varid_work_out, 'time_stat', 'daily_conditional_mean'))
+    call check(nf90_put_att(ncid_work_out, varid_work_out, 'time_aggregation', 'mean over threshold exceedance events within each day'))
+    call check(nf90_put_att(ncid_work_out, varid_work_out, '_FillValue', -9999.0d0))
 
     call check(nf90_def_var(ncid_work_out, 'lift', nf90_double, (/dimid_out_pct, dimid_out_lon, dimid_out_lat, dimid_out_time/), varid_lift_out))
     call check(nf90_put_att(ncid_work_out, varid_lift_out, 'long_name', 'lift work filtered by precipitation threshold'))
     call check(nf90_put_att(ncid_work_out, varid_lift_out, 'units', 'Watts per square meter'))
     call check(nf90_put_att(ncid_work_out, varid_lift_out, 'coordinates', 'percentile lon lat'))
-    call check(nf90_put_att(ncid_work_out, varid_lift_out, 'time_stat', 'daily_mean'))
-    call check(nf90_put_att(ncid_work_out, varid_lift_out, 'time_aggregation', 'mean over native timesteps within each day'))
+    call check(nf90_put_att(ncid_work_out, varid_lift_out, 'time_stat', 'daily_conditional_mean'))
+    call check(nf90_put_att(ncid_work_out, varid_lift_out, 'time_aggregation', 'mean over threshold exceedance events within each day'))
+    call check(nf90_put_att(ncid_work_out, varid_lift_out, '_FillValue', -9999.0d0))
+
+    call check(nf90_def_var(ncid_work_out, 'event_count', nf90_double, (/dimid_out_pct, dimid_out_lon, dimid_out_lat, dimid_out_time/), varid_count_out))
+    call check(nf90_put_att(ncid_work_out, varid_count_out, 'long_name', 'number of events exceeding precipitation threshold'))
+    call check(nf90_put_att(ncid_work_out, varid_count_out, 'units', 'count'))
+    call check(nf90_put_att(ncid_work_out, varid_count_out, 'coordinates', 'percentile lon lat'))
+    call check(nf90_put_att(ncid_work_out, varid_count_out, 'time_stat', 'daily_count'))
+    call check(nf90_put_att(ncid_work_out, varid_count_out, 'time_aggregation', 'sum of threshold exceedance events over native timesteps within each day'))
 
     ! Store threshold values in global attributes for traceability
     ! (for example: p99_threshold, p9995_threshold, ...).
@@ -385,9 +394,11 @@ program compute_work_async_prate_threshold
                         if (pr_buffer(x,y,1,ibuf) >= prate_thresholds(ip)) then
                             work_out_buffer(ip,x,y,1,ibuf) = work_acc
                             lift_out_buffer(ip,x,y,1,ibuf) = lift_acc
+                            count_out_buffer(ip,x,y,1,ibuf) = 1.0d0
                         else
                             work_out_buffer(ip,x,y,1,ibuf) = 0.0d0
                             lift_out_buffer(ip,x,y,1,ibuf) = 0.0d0
+                            count_out_buffer(ip,x,y,1,ibuf) = 0.0d0
                         end if
                     end do
                 end do
@@ -397,6 +408,7 @@ program compute_work_async_prate_threshold
             ! are summed into the same iday slice.
             work_accum_full(:,:,ystart:ystart+chunk_size-1,iday) = work_accum_full(:,:,ystart:ystart+chunk_size-1,iday) + work_out_buffer(:,:,:,1,ibuf)
             lift_accum_full(:,:,ystart:ystart+chunk_size-1,iday) = lift_accum_full(:,:,ystart:ystart+chunk_size-1,iday) + lift_out_buffer(:,:,:,1,ibuf)
+            count_accum_full(:,:,ystart:ystart+chunk_size-1,iday) = count_accum_full(:,:,ystart:ystart+chunk_size-1,iday) + count_out_buffer(:,:,:,1,ibuf)
 
             !$omp atomic write
             buf_state(ibuf) = 2
@@ -413,17 +425,26 @@ program compute_work_async_prate_threshold
     !$omp end master
     !$omp end parallel
 
-    ! Convert accumulated daily sums to daily means.
+    ! Compute conditional means; keep count at 0.0 for no-event cases.
     do iday = 1, ndays
-        if (day_step_count(iday) > 0) then
-            day_norm = 1.0d0 / dble(day_step_count(iday))
-            work_accum_full(:,:,:,iday) = work_accum_full(:,:,:,iday) * day_norm
-            lift_accum_full(:,:,:,iday) = lift_accum_full(:,:,:,iday) * day_norm
-        end if
+        do y = 1, ny
+            do x = 1, nx
+                do ip = 1, npercentiles
+                    if (count_accum_full(ip,x,y,iday) > 0.0d0) then
+                        work_accum_full(ip,x,y,iday) = work_accum_full(ip,x,y,iday) / count_accum_full(ip,x,y,iday)
+                        lift_accum_full(ip,x,y,iday) = lift_accum_full(ip,x,y,iday) / count_accum_full(ip,x,y,iday)
+                    else
+                        work_accum_full(ip,x,y,iday) = -9999.0d0
+                        lift_accum_full(ip,x,y,iday) = -9999.0d0
+                    end if
+                end do
+            end do
+        end do
     end do
 
     call check(nf90_put_var(ncid_work_out, varid_work_out, work_accum_full(:,:,:,1:ndays), start=(/1,1,1,1/), count=(/npercentiles,nx,ny,ndays/)))
     call check(nf90_put_var(ncid_work_out, varid_lift_out, lift_accum_full(:,:,:,1:ndays), start=(/1,1,1,1/), count=(/npercentiles,nx,ny,ndays/)))
+    call check(nf90_put_var(ncid_work_out, varid_count_out, count_accum_full(:,:,:,1:ndays), start=(/1,1,1,1/), count=(/npercentiles,nx,ny,ndays/)))
 
     call check(nf90_close(ncid_dz))
     call check(nf90_close(ncid_temp))

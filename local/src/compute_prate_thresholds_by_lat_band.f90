@@ -110,6 +110,12 @@ program compute_prate_thresholds_by_lat_band
 
     ! Pass 2: compute thresholds for each latitude band independently
     do ilat = 1, nlat_bands
+        ! Guard against completely dry latitude bands (e.g., polar regions)
+        if (sum(hist_area_out(:, ilat)) <= 0.0d0) then
+            thresholds(ilat, :) = 0.0d0
+            cycle
+        end if
+
         call build_normalized_cdf(hist_area_out(:, ilat), cdf_edges)
         call compute_percentile_thresholds_loglog(bin_edges, cdf_edges, percentile_values, thresholds(ilat, :))
     end do
@@ -379,7 +385,11 @@ contains
                 lat_start = i
                 found_start = .true.
             end if
-            if (lat(i) <= lat_north) then
+
+            ! Prevent double-counting boundaries. Include the north pole (lat >= 90)
+            ! only for the northernmost band where lat_north >= 90. Use a small
+            ! tolerance to guard against floating-point representation of 90 deg.
+            if (lat(i) < lat_north .or. (lat(i) >= 90.0d0 - 1.0d-8 .and. lat_north >= 90.0d0)) then
                 lat_end = i
                 found_end = .true.
             end if

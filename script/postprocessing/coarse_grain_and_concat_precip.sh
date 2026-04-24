@@ -25,6 +25,7 @@ PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 
 SIMULATION="${SIMULATION:-control}"
 PRATE_THRESHOLDED=0
+LAT_BAND_THRESHOLDED=0
 THRESHOLD_FILE=""
 
 case "$SIMULATION" in
@@ -44,6 +45,16 @@ case "$SIMULATION" in
     PRATE_THRESHOLDED=1
     THRESHOLD_FILE="${THRESHOLD_FILE:-$PROJECT_ROOT/output/thresholds/thresholds_control.txt}"
     ;;
+  control_prate_thresholded_by_lat_band)
+    SOURCE_ROOT_PART1="/scratch/cimes/GLOBALFV3/20191020.00Z.C3072.L79x2_pire/history"
+    SOURCE_ROOT_PART2="/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire/pp"
+    LIST_FILE_PART1="${LIST_FILE_PART1:-$PROJECT_ROOT/launcher/list/list_control_part1.txt}"
+    LIST_FILE_PART2="${LIST_FILE_PART2:-$PROJECT_ROOT/launcher/list/list_control_part2.txt}"
+    DEFAULT_OUT_DIR="/scratch/gpfs/mbolot/results/GLOBALFV3/precip_coarse_C3072_360x180_prate_thresholded_by_lat_band"
+    PRATE_THRESHOLDED=1
+    LAT_BAND_THRESHOLDED=1
+    THRESHOLD_FILE="${THRESHOLD_FILE:-$PROJECT_ROOT/output/thresholds/thresholds_control_by_lat_band.txt}"
+    ;;
   warming)
     SOURCE_ROOT_PART1="/scratch/cimes/GLOBALFV3/stellar_run/processed/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp"
     SOURCE_ROOT_PART2="/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp"
@@ -60,9 +71,19 @@ case "$SIMULATION" in
     PRATE_THRESHOLDED=1
     THRESHOLD_FILE="${THRESHOLD_FILE:-$PROJECT_ROOT/output/thresholds/thresholds_warming.txt}"
     ;;
+  warming_prate_thresholded_by_lat_band)
+    SOURCE_ROOT_PART1="/scratch/cimes/GLOBALFV3/stellar_run/processed/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp"
+    SOURCE_ROOT_PART2="/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp"
+    LIST_FILE_PART1="${LIST_FILE_PART1:-$PROJECT_ROOT/launcher/list/list_PLUS_4K_CO2_1270ppmv_part1.txt}"
+    LIST_FILE_PART2="${LIST_FILE_PART2:-$PROJECT_ROOT/launcher/list/list_PLUS_4K_CO2_1270ppmv_part2.txt}"
+    DEFAULT_OUT_DIR="/scratch/gpfs/mbolot/results/GLOBALFV3/precip_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv_prate_thresholded_by_lat_band"
+    PRATE_THRESHOLDED=1
+    LAT_BAND_THRESHOLDED=1
+    THRESHOLD_FILE="${THRESHOLD_FILE:-$PROJECT_ROOT/output/thresholds/thresholds_warming_by_lat_band.txt}"
+    ;;
   *)
     echo "Error: unsupported SIMULATION='$SIMULATION'." >&2
-    echo "Use one of: control, warming, control_prate_thresholded, warming_prate_thresholded" >&2
+    echo "Use one of: control, warming, control_prate_thresholded, warming_prate_thresholded, control_prate_thresholded_by_lat_band, warming_prate_thresholded_by_lat_band" >&2
     exit 1
     ;;
 esac
@@ -144,19 +165,86 @@ if [[ "$PRATE_THRESHOLDED" == "1" ]]; then
     exit 1
   fi
 
-  # Parse thresholds first
+  # Parse thresholds first.
+  # Non-lat-band file format: percentile threshold
+  # Lat-band file format: # lat_band p ... ; then rows: band_id t1 t2 ... tN
   pvals_arr=()
   tvals_arr=()
-  while read -r pval tval; do
-    pvals_arr+=("$pval")
-    tvals_arr+=("$tval")
-  done < <(awk 'NF && $1 !~ /^#/ {print $1, $2}' "$THRESHOLD_FILE")
+  declare -A tvals_2d=()
 
-  nthreshold=${#pvals_arr[@]}
-  if [[ "$nthreshold" -eq 0 ]]; then
-    echo "Error: no valid threshold rows found in $THRESHOLD_FILE" >&2
-    exit 1
+  if [[ "$LAT_BAND_THRESHOLDED" == "1" ]]; then
+    mapfile -t pvals_arr < <(awk '
+      /^#/ {
+        for (i=1; i<=NF; i++) {
+          if ($i == "p" && (i+1) <= NF) {
+            print $(i+1)
+          } else if ($i ~ /^p[0-9]/) {
+            v=$i
+            sub(/^p/, "", v)
+            print v
+          }
+        }
+        if (length($0) > 0) exit
+      }
+    ' "$THRESHOLD_FILE")
+
+    if [[ "${#pvals_arr[@]}" -eq 0 ]]; then
+      mapfile -t pvals_arr < <(awk 'NF && $1 !~ /^#/ {
+        for (i=2; i<=NF; i++) print i-1;
+        exit
+      }' "$THRESHOLD_FILE")
+    fi
+
+    nthreshold=${#pvals_arr[@]}
+    if [[ "$nthreshold" -eq 0 ]]; then
+      echo "Error: failed to parse percentile columns from lat-band threshold file: $THRESHOLD_FILE" >&2
+      exit 1
+    fi
+
+    while read -r band ip tval; do
+      tvals_2d["$band,$ip"]="$tval"
+    done < <(awk -v n="${nthreshold}" 'NF && $1 !~ /^#/ {
+      band=$1
+      for (i=1; i<=n; i++) {
+        print band, i, $(i+1)
+      }
+    }' "$THRESHOLD_FILE")
+
+    missing=0
+    for ((ilat=1; ilat<=18; ilat++)); do
+      for ((ip=1; ip<=nthreshold; ip++)); do
+        if [[ -z "${tvals_2d[$ilat,$ip]:-}" ]]; then
+          echo "Error: missing threshold value for band=$ilat percentile_index=$ip in $THRESHOLD_FILE" >&2
+          missing=1
+          break
+        fi
+      done
+      [[ "$missing" -eq 1 ]] && break
+    done
+    if [[ "$missing" -eq 1 ]]; then
+      exit 1
+    fi
+  else
+    while read -r pval tval; do
+      pvals_arr+=("$pval")
+      tvals_arr+=("$tval")
+    done < <(awk 'NF && $1 !~ /^#/ {print $1, $2}' "$THRESHOLD_FILE")
+
+    nthreshold=${#pvals_arr[@]}
+    if [[ "$nthreshold" -eq 0 ]]; then
+      echo "Error: no valid threshold rows found in $THRESHOLD_FILE" >&2
+      exit 1
+    fi
   fi
+
+  # After daily sums are computed on native grid, convert p* to conditional means
+  # by dividing by c* at each grid point/day and writing FillValue-like sentinel
+  # where no threshold exceedance occurred.
+  daily_cond_expr=""
+  for ((ip=0; ip<nthreshold; ip++)); do
+    daily_cond_expr+="where(c${ip}>0){p${ip}=p${ip}/c${ip};} elsewhere {p${ip}=-9999.0;};"
+  done
+
   echo "Found $nthreshold thresholds from $THRESHOLD_FILE"
 
   # Detect precipitation variable from the first input file
@@ -184,13 +272,42 @@ if [[ "$PRATE_THRESHOLDED" == "1" ]]; then
   fi
   echo "Detected precipitation variable: $precip_var"
 
-  # Build ncap2 expression: compute one masked variable per threshold in a single pass.
-  # p0 = precip*(precip >= t0), p1 = precip*(precip >= t1), ...
-  # This avoids running ncap2 once per threshold per file.
+  # Build ncap2 expression: compute one masked precip variable and one event-count
+  # indicator per threshold in a single pass.
+  # For lat-band mode, thresholds depend on latitude band.
   ncap_expr=""
-  for ((ip=0; ip<nthreshold; ip++)); do
-    ncap_expr+="p${ip}=${precip_var}*(${precip_var}>=${tvals_arr[$ip]});"
-  done
+  if [[ "$LAT_BAND_THRESHOLDED" == "1" ]]; then
+    lat_var="grid_yt_coarse"
+    if ! grep -q "[[:space:]]${lat_var}(" "$ncks_header"; then
+      if grep -q "[[:space:]]lat(" "$ncks_header"; then
+        lat_var="lat"
+      else
+        echo "Error: unable to detect latitude coordinate variable (tried grid_yt_coarse and lat) in $first_file" >&2
+        exit 1
+      fi
+    fi
+    for ((ip=0; ip<nthreshold; ip++)); do
+      ncap_expr+="p${ip}=0.0*${precip_var};"
+      ncap_expr+="c${ip}=0.0*${precip_var};"
+      for ((ilat=1; ilat<=18; ilat++)); do
+        south=$(( -90 + (ilat - 1) * 10 ))
+        north=$(( south + 10 ))
+        tval="${tvals_2d[$ilat,$((ip+1))]}"
+        if [[ "$ilat" -lt 18 ]]; then
+          ncap_expr+="p${ip}=where(((${lat_var}>=${south})&&(${lat_var}<${north})),${precip_var}*(${precip_var}>=${tval}),p${ip});"
+          ncap_expr+="c${ip}=where(((${lat_var}>=${south})&&(${lat_var}<${north})),(${precip_var}>=${tval}),c${ip});"
+        else
+          ncap_expr+="p${ip}=where(((${lat_var}>=${south})&&(${lat_var}<=${north})),${precip_var}*(${precip_var}>=${tval}),p${ip});"
+          ncap_expr+="c${ip}=where(((${lat_var}>=${south})&&(${lat_var}<=${north})),(${precip_var}>=${tval}),c${ip});"
+        fi
+      done
+    done
+  else
+    for ((ip=0; ip<nthreshold; ip++)); do
+      ncap_expr+="p${ip}=${precip_var}*(${precip_var}>=${tvals_arr[$ip]});"
+      ncap_expr+="c${ip}=(${precip_var}>=${tvals_arr[$ip]});"
+    done
+  fi
 
   # Initialise per-threshold arrays to collect remapped per-date files
   for ((ip=0; ip<nthreshold; ip++)); do
@@ -227,13 +344,20 @@ if [[ "$PRATE_THRESHOLDED" == "1" ]]; then
       exit 1
     fi
 
-    # Step 2: daily aggregate on native grid
+    # Step 2: daily aggregate on native grid.
+    # Use daily sums for both masked precip (p*) and event counts (c*), then
+    # compute conditional means later as p_sum / c_sum.
     daily="$TMP_DIR/daily_$(printf '%06d' "$i").nc"
-    if ! cdo -s -L -daymean "$masked" "$daily" 2>&1; then
-      echo "Error: cdo -daymean failed for $in_file" >&2
+    if ! cdo -s -L -daysum "$masked" "$daily" 2>&1; then
+      echo "Error: cdo -daysum failed for $in_file" >&2
       exit 1
     fi
     rm -f "$masked"
+
+    if ! ncap2 -O -s "$daily_cond_expr" "$daily" "$daily" 2>&1; then
+      echo "Error: ncap2 conditional-mean step failed for $in_file" >&2
+      exit 1
+    fi
 
     # Step 3: remap to target grid
     remapped="$TMP_DIR/remapped_$(printf '%06d' "$i").nc"
@@ -267,22 +391,23 @@ if [[ "$PRATE_THRESHOLDED" == "1" ]]; then
     done
   done
 
-  # For each threshold: extract its variable from all remapped files, concat, rename to 'precip'
+  # For each threshold: extract p/c variables from all remapped files and concat.
+  # p* is already a daily conditional mean from the native-grid daily step.
   per_thresh_concat=()
   for ((ip=0; ip<nthreshold; ip++)); do
     pval="${pvals_arr[$ip]}"
     tval="${tvals_arr[$ip]}"
-    echo "Threshold $((ip+1))/$nthreshold: extracting p${ip} (percentile=$pval threshold=$tval)"
+    echo "Threshold $((ip+1))/$nthreshold: extracting p${ip}, c${ip} (percentile=$pval threshold=$tval)"
 
     ref="thresh_files_${ip}[@]"
     mapfile -t tfiles < <(printf '%s\n' "${!ref}" | sort -u)
 
-    # Extract just this threshold's variable from every remapped file, then concat
+    # Extract this threshold's masked-sum and count variables from every remapped file, then concat
     extracted_files=()
     for f in "${tfiles[@]}"; do
       ext="$TMP_DIR/ext_p${ip}_$(basename "$f")"
-      if ! ncks -O -v "p${ip}" "$f" "$ext" 2>&1; then
-        echo "Error: ncks extraction of p${ip} failed for $f" >&2
+      if ! ncks -O -v "p${ip},c${ip}" "$f" "$ext" 2>&1; then
+        echo "Error: ncks extraction of p${ip},c${ip} failed for $f" >&2
         exit 1
       fi
       extracted_files+=("$ext")
@@ -296,9 +421,13 @@ if [[ "$PRATE_THRESHOLDED" == "1" ]]; then
     # Clean up extracted files
     rm -f "${extracted_files[@]}"
 
-    # Rename p${ip} → precip so ncecat sees the same variable name in every file
-    if ! ncrename -O -v "p${ip},precip" "$concat_thresh" 2>&1; then
+    if ! ncrename -O -v "p${ip},precip" -v "c${ip},event_count" "$concat_thresh" 2>&1; then
       echo "Error: ncrename failed for threshold $ip" >&2
+      exit 1
+    fi
+
+    if ! ncks -O -v "precip,event_count,time,lon,lat" "$concat_thresh" "$concat_thresh" 2>&1; then
+      echo "Error: ncks keep of precip/event_count failed for threshold $ip" >&2
       exit 1
     fi
 
@@ -334,18 +463,39 @@ if [[ "$PRATE_THRESHOLDED" == "1" ]]; then
     -a long_name,precip,o,c,"precipitation rate filtered by precipitation threshold" \
     -a units,precip,o,c,"kg m-2 s-1" \
     -a coordinates,precip,o,c,"percentile lon lat" \
-    -a time_stat,precip,o,c,"daily_mean" \
-    -a time_aggregation,precip,o,c,"mean over native timesteps within each day" \
+    -a time_stat,precip,o,c,"daily_conditional_mean" \
+    -a time_aggregation,precip,o,c,"mean over threshold exceedance events within each day" \
+    -a _FillValue,precip,o,d,-9999.0 \
+    -a long_name,event_count,o,c,"number of events exceeding precipitation threshold" \
+    -a units,event_count,o,c,"count" \
+    -a coordinates,event_count,o,c,"percentile lon lat" \
+    -a time_stat,event_count,o,c,"daily_count" \
+    -a time_aggregation,event_count,o,c,"sum of threshold exceedance events over native timesteps within each day" \
     -a threshold_file,global,o,c,"$THRESHOLD_FILE" \
-    -a daily_stat,global,o,c,"mean" \
+    -a daily_stat,global,o,c,"mixed_by_variable" \
     -a daily_aggregation,global,o,c,"mean over native timesteps within each day" \
     "$final_file"
 
-  while read -r pval tval; do
-    ptxt=$(awk -v p="$pval" 'BEGIN {printf "%.4f", 100.0*p}')
-    packed=$(echo "$ptxt" | sed -E 's/0+$//; s/\.$//; s/\.//g')
-    ncatted -O -a "p${packed}_threshold,global,o,d,${tval}" "$final_file"
-  done < <(awk 'NF && $1 !~ /^#/ {print $1, $2}' "$THRESHOLD_FILE")
+  if [[ "$LAT_BAND_THRESHOLDED" == "1" ]]; then
+    for ((ip=1; ip<=nthreshold; ip++)); do
+      pval="${pvals_arr[$((ip-1))]}"
+      ptxt=$(awk -v p="$pval" 'BEGIN {printf "%.4f", 100.0*p}')
+      packed=$(echo "$ptxt" | sed -E 's/0+$//; s/\.$//; s/\.//g')
+      if [[ -z "$packed" ]]; then
+        packed=$((ip))
+      fi
+      for ((ilat=1; ilat<=18; ilat++)); do
+        tval="${tvals_2d[$ilat,$ip]}"
+        ncatted -O -a "band$(printf '%02d' "$ilat")_p${packed}_threshold,global,o,d,${tval}" "$final_file"
+      done
+    done
+  else
+    while read -r pval tval; do
+      ptxt=$(awk -v p="$pval" 'BEGIN {printf "%.4f", 100.0*p}')
+      packed=$(echo "$ptxt" | sed -E 's/0+$//; s/\.$//; s/\.//g')
+      ncatted -O -a "p${packed}_threshold,global,o,d,${tval}" "$final_file"
+    done < <(awk 'NF && $1 !~ /^#/ {print $1, $2}' "$THRESHOLD_FILE")
+  fi
 
   echo "Thresholded percentile output written: $final_file"
 
