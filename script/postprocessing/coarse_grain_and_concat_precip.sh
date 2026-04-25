@@ -33,6 +33,7 @@ PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 
 SIMULATION="${SIMULATION:-control}"
 INPUT_MODE=""
+INCLUDE_EVENT_COUNT="false"
 
 case "$SIMULATION" in
   control)
@@ -56,24 +57,28 @@ case "$SIMULATION" in
     default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/precip_coarse_C3072_360x180_prate_thresholded"
     file_prefix="work_prate_threshold_"
     INPUT_MODE="directory"
+    INCLUDE_EVENT_COUNT="true"
     ;;
   warming_prate_thresholded)
     default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv_prate_thresholded"
     default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/precip_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv_prate_thresholded"
     file_prefix="work_prate_threshold_"
     INPUT_MODE="directory"
+    INCLUDE_EVENT_COUNT="true"
     ;;
   control_prate_thresholded_by_lat_band)
     default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_prate_thresholded_by_lat_band"
     default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/precip_coarse_C3072_360x180_prate_thresholded_by_lat_band"
     file_prefix="work_prate_threshold_by_lat_band_"
     INPUT_MODE="directory"
+    INCLUDE_EVENT_COUNT="true"
     ;;
   warming_prate_thresholded_by_lat_band)
     default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv_prate_thresholded_by_lat_band"
     default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/precip_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv_prate_thresholded_by_lat_band"
     file_prefix="work_prate_threshold_by_lat_band_"
     INPUT_MODE="directory"
+    INCLUDE_EVENT_COUNT="true"
     ;;
   *)
     echo "Error: unsupported SIMULATION='$SIMULATION'." >&2
@@ -250,12 +255,20 @@ for i in "${!selected_inputs[@]}"; do
     base_name="${date_label}.nc"
   fi
 
-  # Step 1: extract precipitation variable only.
+  # Step 1: extract required variables.
   extracted_file="$TMP_DIR/extracted_$base_name"
-  echo "Extracting ${PRECIP_VAR} from $base_name"
-  if ! ncks -O -v "$PRECIP_VAR" "$in_file" "$extracted_file"; then
-    echo "Error: failed to extract variable '$PRECIP_VAR' from $in_file" >&2
-    exit 1
+  if [[ "$INCLUDE_EVENT_COUNT" == "true" ]]; then
+    echo "Extracting ${PRECIP_VAR} and event_count from $base_name"
+    if ! ncks -O -v "$PRECIP_VAR",event_count "$in_file" "$extracted_file"; then
+      echo "Error: failed to extract variables '$PRECIP_VAR,event_count' from $in_file" >&2
+      exit 1
+    fi
+  else
+    echo "Extracting ${PRECIP_VAR} from $base_name"
+    if ! ncks -O -v "$PRECIP_VAR" "$in_file" "$extracted_file"; then
+      echo "Error: failed to extract variable '$PRECIP_VAR' from $in_file" >&2
+      exit 1
+    fi
   fi
 
   # Unify interface across all modes: output variable should be named 'precip'.

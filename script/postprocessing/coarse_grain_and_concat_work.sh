@@ -21,6 +21,7 @@ module purge
 module load intel/2021.1.2 hdf5/intel-2021.1/1.10.6 netcdf/intel-2021.1/hdf5-1.10.6/4.7.4 cdo/netcdf-4.7.4/hdf5-1.10.6/2.0.1 nco/netcdf-4.7.4/hdf5-1.10.6/5.0.3
 
 SIMULATION="${SIMULATION:-control}"
+SELECT_THRESHOLD_VARS="false"
 
 case "$SIMULATION" in
   control)
@@ -37,15 +38,29 @@ case "$SIMULATION" in
     default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_prate_thresholded"
     default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180_prate_thresholded"
     file_prefix="work_prate_threshold_"
+    SELECT_THRESHOLD_VARS="true"
     ;;
   warming_prate_thresholded)
     default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv_prate_thresholded"
     default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv_prate_thresholded"
     file_prefix="work_prate_threshold_"
+    SELECT_THRESHOLD_VARS="true"
+    ;;
+  control_prate_thresholded_by_lat_band)
+    default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_prate_thresholded_by_lat_band"
+    default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180_prate_thresholded_by_lat_band"
+    file_prefix="work_prate_threshold_by_lat_band_"
+    SELECT_THRESHOLD_VARS="true"
+    ;;
+  warming_prate_thresholded_by_lat_band)
+    default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv_prate_thresholded_by_lat_band"
+    default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv_prate_thresholded_by_lat_band"
+    file_prefix="work_prate_threshold_by_lat_band_"
+    SELECT_THRESHOLD_VARS="true"
     ;;
   *)
     echo "Error: unsupported SIMULATION='$SIMULATION'." >&2
-    echo "Use one of: control, warming, control_prate_thresholded, warming_prate_thresholded" >&2
+    echo "Use one of: control, warming, control_prate_thresholded, warming_prate_thresholded, control_prate_thresholded_by_lat_band, warming_prate_thresholded_by_lat_band" >&2
     exit 1
     ;;
 esac
@@ -142,6 +157,17 @@ for i in "${!selected_inputs[@]}"; do
 
   echo "Remapping $base_name -> $(basename "$out_file")"
   cdo -L "${REMAP_METHOD},${TARGET_GRID}" "$in_file" "$out_file"
+
+  if [[ "$SELECT_THRESHOLD_VARS" == "true" ]]; then
+    filtered_file="$TMP_DIR/filtered_$base_name"
+    echo "Selecting work,lift,event_count in $(basename "$out_file")"
+    if ! cdo -L selvar,work,lift,event_count "$out_file" "$filtered_file"; then
+      echo "Error: failed to keep only work,lift,event_count in $out_file" >&2
+      exit 1
+    fi
+    mv "$filtered_file" "$out_file"
+  fi
+
   remapped_files+=("$out_file")
 done
 
