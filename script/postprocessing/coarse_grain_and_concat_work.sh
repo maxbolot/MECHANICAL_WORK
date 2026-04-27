@@ -77,8 +77,21 @@ OUT_DIR="${OUT_DIR:-$default_out_dir}"
 REMAP_METHOD="${REMAP_METHOD:-remapcon}"
 TARGET_GRID="${TARGET_GRID:-r360x180}"
 
+# Optional recovery mode: point to an existing tmp_remap_* directory from a failed run.
+# Behavior:
+# - parse completed canonical remapped files in that directory,
+# - resume from there,
+# - rerun the last completed file for safety.
+RECOVER_TMP_DIR="${RECOVER_TMP_DIR:-}"
+
 # Temporary workspace (can be overridden if needed).
 TMP_DIR="${TMP_DIR:-$OUT_DIR/tmp_remap_$$}"
+
+AUTO_TMP_DIR="true"
+if [[ -n "$RECOVER_TMP_DIR" ]]; then
+  TMP_DIR="$RECOVER_TMP_DIR"
+  AUTO_TMP_DIR="false"
+fi
 
 for cmd in cdo ncrcat; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -96,7 +109,9 @@ mkdir -p "$OUT_DIR"
 mkdir -p "$TMP_DIR"
 
 cleanup() {
-  rm -rf "$TMP_DIR"
+  if [[ "$AUTO_TMP_DIR" == "true" ]]; then
+    rm -rf "$TMP_DIR"
+  fi
 }
 trap cleanup EXIT
 
@@ -149,23 +164,67 @@ for in_file in "${sorted_inputs[@]}"; do
   fi
 done
 
+resume_from_label=""
+if [[ -n "$RECOVER_TMP_DIR" ]]; then
+  if [[ ! -d "$RECOVER_TMP_DIR" ]]; then
+    echo "Error: RECOVER_TMP_DIR does not exist: $RECOVER_TMP_DIR" >&2
+    exit 1
+  fi
+
+  shopt -s nullglob
+  recovered_candidates=("$RECOVER_TMP_DIR"/${file_prefix}[0-9]*.nc)
+  shopt -u nullglob
+
+  recovered_labels=()
+  for rf in "${recovered_candidates[@]}"; do
+    rb="$(basename "$rf")"
+    if [[ "$rb" =~ ^${file_prefix}([0-9]{10})\.nc$ ]]; then
+      recovered_labels+=("${BASH_REMATCH[1]}")
+    fi
+  done
+
+  if [[ ${#recovered_labels[@]} -gt 0 ]]; then
+    IFS=$'\n' sorted_recovered_labels=($(printf '%s\n' "${recovered_labels[@]}" | sort))
+    unset IFS
+    resume_from_label="${sorted_recovered_labels[${#sorted_recovered_labels[@]}-1]}"
+    echo "Recovery mode: found ${#sorted_recovered_labels[@]} completed files in $RECOVER_TMP_DIR"
+    echo "Recovery mode: rerunning last completed label for safety: $resume_from_label"
+  else
+    echo "Recovery mode: no completed canonical files found in $RECOVER_TMP_DIR; running full set."
+  fi
+fi
+
 remapped_files=()
 for i in "${!selected_inputs[@]}"; do
   in_file="${selected_inputs[$i]}"
   base_name="$(basename "${sorted_inputs[$i]}")"
+  if [[ ! "$base_name" =~ ^${file_prefix}([0-9]{10})\.nc$ ]]; then
+    echo "Error: cannot parse date label from filename: $base_name" >&2
+    exit 1
+  fi
+  date_label="${BASH_REMATCH[1]}"
   out_file="$TMP_DIR/$base_name"
 
-  echo "Remapping $base_name -> $(basename "$out_file")"
-  cdo -L "${REMAP_METHOD},${TARGET_GRID}" "$in_file" "$out_file"
+  should_remap="true"
+  if [[ -n "$resume_from_label" && "$date_label" < "$resume_from_label" && -f "$out_file" ]]; then
+    should_remap="false"
+  fi
 
-  if [[ "$SELECT_THRESHOLD_VARS" == "true" ]]; then
-    filtered_file="$TMP_DIR/filtered_$base_name"
-    echo "Selecting work,lift,event_count in $(basename "$out_file")"
-    if ! cdo -L selvar,work,lift,event_count "$out_file" "$filtered_file"; then
-      echo "Error: failed to keep only work,lift,event_count in $out_file" >&2
-      exit 1
+  if [[ "$should_remap" == "true" ]]; then
+    echo "Remapping $base_name -> $(basename "$out_file")"
+    cdo -L "${REMAP_METHOD},${TARGET_GRID}" "$in_file" "$out_file"
+
+    if [[ "$SELECT_THRESHOLD_VARS" == "true" ]]; then
+      filtered_file="$TMP_DIR/filtered_$base_name"
+      echo "Selecting work,lift,event_count in $(basename "$out_file")"
+      if ! cdo -L selvar,work,lift,event_count "$out_file" "$filtered_file"; then
+        echo "Error: failed to keep only work,lift,event_count in $out_file" >&2
+        exit 1
+      fi
+      mv "$filtered_file" "$out_file"
     fi
-    mv "$filtered_file" "$out_file"
+  else
+    echo "Reusing completed remap: $base_name"
   fi
 
   remapped_files+=("$out_file")

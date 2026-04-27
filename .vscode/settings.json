@@ -13,6 +13,12 @@
   "python-envs.defaultEnvManager": "ms-python.python:conda",
   "python-envs.defaultPackageManager": "ms-python.python:conda",
   "python.terminal.activateEnvironment": false,
+  "python.analysis.extraPaths": [
+    "${workspaceFolder}/python"
+  ],
+  "python.autoComplete.extraPaths": [
+    "${workspaceFolder}/python"
+  ],
 
   // LaTeX Workshop: use pdflatex + bibtex (latexmk is not installed on this cluster)
   "latex-workshop.latex.recipes": [

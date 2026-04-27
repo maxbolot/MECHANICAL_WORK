@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import importlib
 from typing import Optional, Sequence, Tuple
 
 import matplotlib.pyplot as plt
@@ -17,9 +18,11 @@ except Exception:
     HAS_CARTOPY = False
 
 try:
-    from mpl_toolkits.basemap import Basemap
+    _basemap_module = importlib.import_module("mpl_toolkits.basemap")
+    Basemap = getattr(_basemap_module, "Basemap")
     HAS_BASEMAP = True
 except Exception:
+    Basemap = None
     HAS_BASEMAP = False
 
 from translated_from_matlab.lib.io import ensure_input_exists

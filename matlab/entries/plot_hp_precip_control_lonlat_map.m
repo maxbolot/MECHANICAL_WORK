@@ -7,18 +7,31 @@ addpath(fullfile(matlab_base_dir, 'lib'));
 addpath(fullfile(matlab_base_dir, 'analysis'));
 addpath(fullfile(matlab_base_dir, 'presets'));
 
-cfg.run_mode = 'prate_thresholded';
-% Supported: non_thresholded | prate_thresholded
+cfg.run_mode = 'wet_day_only';
+% Supported: non_thresholded | wet_day_only | prate_thresholded | prate_thresholded_by_lat_band
 
-cfg.threshold_percentile = 0.5;
+% Percentile coordinate value used only when run_mode is thresholded.
+% Example: 0.5 for p50, 0.9 for p90, 0.99 for p99 (if present in file).
+cfg.threshold_percentile = NaN;
+if any(strcmpi(cfg.run_mode, {'prate_thresholded', 'prate_thresholded_by_lat_band'}))
+    cfg.threshold_percentile = 0.5;
+end
+
+% Wet-day filter threshold (kg m^-2 s^-1) used only when run_mode='wet_day_only'.
+% Override this value as needed; default is 1e-5.
+cfg.wet_day_threshold = 1.0e-5;
+
 cfg.g = 9.81;
 
 % Optional manual color limits per panel; leave empty for auto limits.
 cfg.clim_hp = [0, 2e4];
-cfg.clim_precip = [];
+cfg.clim_precip = [0, 2.5e-4];
 
 % Optional manual contour levels per panel; leave empty for auto levels.
 cfg.contour_levels_hp = [];
 cfg.contour_levels_precip = [1e-10];
+
+% Toggle contour labels on/off.
+cfg.show_contour_labels = false;
 
 run_hp_precip_control_lonlat_map_analysis(cfg);

@@ -108,8 +108,21 @@ fi
 REMAP_METHOD="${REMAP_METHOD:-remapcon}"
 TARGET_GRID="${TARGET_GRID:-r360x180}"
 
+# Optional recovery mode: point to an existing tmp_remap_* directory from a failed run.
+# Behavior:
+# - detect already completed remapped outputs in that directory,
+# - resume from there,
+# - rerun the last completed file for safety.
+RECOVER_TMP_DIR="${RECOVER_TMP_DIR:-}"
+
 # Temporary workspace (can be overridden if needed).
 TMP_DIR="${TMP_DIR:-$OUT_DIR/tmp_remap_$$}"
+
+AUTO_TMP_DIR="true"
+if [[ -n "$RECOVER_TMP_DIR" ]]; then
+  TMP_DIR="$RECOVER_TMP_DIR"
+  AUTO_TMP_DIR="false"
+fi
 
 for cmd in cdo ncrcat ncks sed; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -138,7 +151,9 @@ mkdir -p "$OUT_DIR"
 mkdir -p "$TMP_DIR"
 
 cleanup() {
-  rm -rf "$TMP_DIR"
+  if [[ "$AUTO_TMP_DIR" == "true" ]]; then
+    rm -rf "$TMP_DIR"
+  fi
 }
 trap cleanup EXIT
 
@@ -244,6 +259,43 @@ if [[ ${#selected_inputs[@]} -eq 0 ]]; then
   exit 1
 fi
 
+resume_from_index=-1
+if [[ -n "$RECOVER_TMP_DIR" ]]; then
+  if [[ ! -d "$RECOVER_TMP_DIR" ]]; then
+    echo "Error: RECOVER_TMP_DIR does not exist: $RECOVER_TMP_DIR" >&2
+    exit 1
+  fi
+
+  for i in "${!selected_inputs[@]}"; do
+    if [[ "$INPUT_MODE" == "directory" ]]; then
+      base_name="$(basename "${sorted_inputs[$i]}")"
+    else
+      date_label="${selected_inputs[$i]%/*}"
+      date_label="${date_label##*/}"
+      base_name="${date_label}.nc"
+    fi
+
+    out_file="$TMP_DIR/remapped_$base_name"
+    if [[ -f "$out_file" ]]; then
+      resume_from_index=$i
+    fi
+  done
+
+  if (( resume_from_index >= 0 )); then
+    if [[ "$INPUT_MODE" == "directory" ]]; then
+      resume_base_name="$(basename "${sorted_inputs[$resume_from_index]}")"
+    else
+      resume_date_label="${selected_inputs[$resume_from_index]%/*}"
+      resume_date_label="${resume_date_label##*/}"
+      resume_base_name="${resume_date_label}.nc"
+    fi
+    echo "Recovery mode: found $((resume_from_index + 1)) completed remapped files in $RECOVER_TMP_DIR"
+    echo "Recovery mode: rerunning last completed file for safety: $resume_base_name"
+  else
+    echo "Recovery mode: no completed remapped files found in $RECOVER_TMP_DIR; running full set."
+  fi
+fi
+
 remapped_files=()
 for i in "${!selected_inputs[@]}"; do
   in_file="${selected_inputs[$i]}"
@@ -281,8 +333,17 @@ for i in "${!selected_inputs[@]}"; do
 
   # Step 2: remap extracted precip to target grid.
   out_file="$TMP_DIR/remapped_$base_name"
-  echo "Remapping $(basename "$extracted_file") -> $(basename "$out_file")"
-  cdo -L "${REMAP_METHOD},${TARGET_GRID}" "$extracted_file" "$out_file"
+  should_remap="true"
+  if (( resume_from_index >= 0 )) && (( i < resume_from_index )) && [[ -f "$out_file" ]]; then
+    should_remap="false"
+  fi
+
+  if [[ "$should_remap" == "true" ]]; then
+    echo "Remapping $(basename "$extracted_file") -> $(basename "$out_file")"
+    cdo -L "${REMAP_METHOD},${TARGET_GRID}" "$extracted_file" "$out_file"
+  else
+    echo "Reusing completed remap: $base_name"
+  fi
 
   remapped_files+=("$out_file")
 done

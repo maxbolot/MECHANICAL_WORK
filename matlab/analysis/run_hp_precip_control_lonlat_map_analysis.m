@@ -22,6 +22,9 @@ function cfg = apply_defaults(cfg)
     if ~isfield(cfg, 'threshold_percentile')
         cfg.threshold_percentile = 0.5;
     end
+    if ~isfield(cfg, 'wet_day_threshold')
+        cfg.wet_day_threshold = 1.0e-5;
+    end
     if ~isfield(cfg, 'g')
         cfg.g = 9.81;
     end
@@ -37,6 +40,9 @@ function cfg = apply_defaults(cfg)
     if ~isfield(cfg, 'contour_levels_precip')
         cfg.contour_levels_precip = [];
     end
+    if ~isfield(cfg, 'show_contour_labels')
+        cfg.show_contour_labels = false;
+    end
 end
 
 
@@ -44,8 +50,8 @@ function out = process_simulation(scenario, cfg, tag)
     files = resolve_files_for_mode(scenario, cfg.run_mode);
 
     ensure_file_exists(files.lift_ncfile, sprintf('%s lift/work file', tag));
-    if isempty(files.precip_ncfile)
-        fprintf(['%s precip file not configured in preset for mode "%s". ' ...
+    if isempty(files.precip_ncfile) || ~isfile(files.precip_ncfile)
+        fprintf(['%s precip file is missing in preset for mode "%s". ' ...
             'Falling back to lift/work file for precipitation variable lookup.\n'], tag, cfg.run_mode);
         files.precip_ncfile = files.lift_ncfile;
     else
@@ -61,17 +67,31 @@ function out = process_simulation(scenario, cfg, tag)
     precip_varname = find_precip_varname(files.precip_ncfile);
     [precip3d, precip_percentile] = read_lon_lat_time_from_var(files.precip_ncfile, precip_varname, cfg.threshold_percentile);
 
-    [lift3d, precip3d, common_time_days] = intersect_common_daily_time_range( ...
+    [lift3d, precip3d, common_time_days, lift_idx] = intersect_common_daily_time_range( ...
         lift3d, lift_time_axis, files.lift_ncfile, ...
         precip3d, precip_time_axis, files.precip_ncfile, ...
         tag);
+
+    if is_wet_day_mode_local(cfg.run_mode)
+        wet_mask = (precip3d > cfg.wet_day_threshold);
+        lift3d(~wet_mask) = NaN;
+        precip3d(~wet_mask) = NaN;
+    end
 
     [time_weights_days, missing_steps] = compute_time_weights_from_days(common_time_days, tag);
 
     out.lon = lon;
     out.lat = lat;
-    out.lift_mean = weighted_mean_over_time_map(lift3d, time_weights_days);
-    out.precip_mean = weighted_mean_over_time_map(precip3d, time_weights_days);
+    if is_thresholded_mode_local(cfg.run_mode)
+        [event_count3d, ~] = read_lon_lat_time_from_var(files.lift_ncfile, 'event_count', cfg.threshold_percentile);
+        event_count3d = event_count3d(:, :, lift_idx);
+        event_weights = event_count3d .* reshape(double(time_weights_days(:)), 1, 1, []);
+        out.lift_mean = weighted_mean_over_time_map_with_cell_weights_local(lift3d, event_weights);
+        out.precip_mean = weighted_mean_over_time_map_with_cell_weights_local(precip3d, event_weights);
+    else
+        out.lift_mean = weighted_mean_over_time_map(lift3d, time_weights_days);
+        out.precip_mean = weighted_mean_over_time_map(precip3d, time_weights_days);
+    end
     out.hp_mean = out.lift_mean ./ (cfg.g .* out.precip_mean);
     out.hp_mean(abs(out.precip_mean) < eps) = NaN;
 
@@ -93,12 +113,27 @@ function files = resolve_files_for_mode(scenario, run_mode)
             else
                 files.precip_ncfile = '';
             end
+        case "wet_day_only"
+            files.lift_ncfile = scenario.standard_ncfile;
+            if isfield(scenario, 'standard_precip_ncfile')
+                files.precip_ncfile = scenario.standard_precip_ncfile;
+            else
+                files.precip_ncfile = '';
+            end
         case "prate_thresholded"
             files.lift_ncfile = scenario.thresholded_ncfile;
             if isfield(scenario, 'thresholded_precip_ncfile')
                 files.precip_ncfile = scenario.thresholded_precip_ncfile;
             else
                 files.precip_ncfile = '';
+            end
+        case "prate_thresholded_by_lat_band"
+            if isfield(scenario, 'thresholded_by_lat_band_ncfile') && isfield(scenario, 'thresholded_by_lat_band_precip_ncfile')
+                files.lift_ncfile = scenario.thresholded_by_lat_band_ncfile;
+                files.precip_ncfile = scenario.thresholded_by_lat_band_precip_ncfile;
+            else
+                error(['Scenario preset does not define explicit lat-band thresholded files. ', ...
+                    'Expected fields: thresholded_by_lat_band_ncfile and thresholded_by_lat_band_precip_ncfile.']);
             end
         otherwise
             error('Unsupported run_mode: %s', run_mode);
@@ -110,6 +145,28 @@ function ensure_file_exists(ncfile, label)
     if ~isfile(ncfile)
         error('%s not found: %s', label, ncfile);
     end
+end
+
+
+function tf = is_thresholded_mode_local(run_mode)
+    rm = lower(string(run_mode));
+    tf = (rm == "prate_thresholded") || (rm == "prate_thresholded_by_lat_band");
+end
+
+
+function tf = is_wet_day_mode_local(run_mode)
+    rm = lower(string(run_mode));
+    tf = (rm == "wet_day_only");
+end
+
+
+function mean_map = weighted_mean_over_time_map_with_cell_weights_local(values3d, weights3d)
+    valid = isfinite(values3d) & isfinite(weights3d) & (weights3d > 0);
+    weighted_num = sum(values3d .* weights3d .* double(valid), 3, 'omitnan');
+    weighted_den = sum(weights3d .* double(valid), 3, 'omitnan');
+
+    mean_map = weighted_num ./ weighted_den;
+    mean_map(weighted_den <= 0) = NaN;
 end
 
 
@@ -134,18 +191,21 @@ function plot_control_maps(lon_in, lat_in, hp_map, precip_map, main_title, cfg)
 
     ax1 = nexttile(1);
     plot_control_panel(ax1, X, Y, hp_plot, cm, ...
-        'a. H_p (control)', 'm', cfg.clim_hp, cfg.contour_levels_hp);
+        'a. H_p (control)', 'm', cfg.clim_hp, cfg.contour_levels_hp, cfg.show_contour_labels);
 
     ax2 = nexttile(2);
     plot_control_panel(ax2, X, Y, precip_plot, cm, ...
-        'b. P (control)', 'kg m^{-2} s^{-1}', cfg.clim_precip, cfg.contour_levels_precip);
+        'b. P (control)', 'kg m^{-2} s^{-1}', cfg.clim_precip, cfg.contour_levels_precip, cfg.show_contour_labels);
 
     sgtitle(t, main_title, 'Interpreter', 'none');
 end
 
 
-function plot_control_panel(ax, X, Y, field, cm, panel_title, colorbar_label, clim_override, contour_levels_override)
+function plot_control_panel(ax, X, Y, field, cm, panel_title, colorbar_label, clim_override, contour_levels_override, show_contour_labels)
     axes(ax);
+    nan_background = [0.7, 0.7, 0.7];
+    panel_clim = resolve_panel_clim(field, clim_override);
+    rgb_field = map_field_to_rgb_with_nan_local(field, cm, panel_clim, nan_background);
 
     axesm('mercator', 'Frame', 'on', 'Grid', 'on', 'MapLatLimit', [-60 60], ...
         'MapLonLimit', [-180 180], 'Origin', [0 0 0], ...
@@ -153,14 +213,25 @@ function plot_control_panel(ax, X, Y, field, cm, panel_title, colorbar_label, cl
         'mlabellocation', 60, 'plinelocation', 20, 'mlinelocation', 45, ...
         'MLabelParallel', 'south', 'FontSize', 8);
 
-    geoshow(Y, X, field, 'DisplayType', 'texturemap');
+    geoshow(Y, X, rgb_field, 'DisplayType', 'texturemap');
     shading flat;
 
     hold on;
     contour_levels = resolve_contour_levels(field, contour_levels_override);
     print_contour_levels(panel_title, contour_levels, contour_levels_override);
     if ~isempty(contour_levels)
-        contourm(Y, X, field, contour_levels, 'k', 'LineWidth', 0.6);
+        [cmat, ~] = contourm(Y, X, field, contour_levels, 'k', 'LineWidth', 0.6);
+        if show_contour_labels
+            if has_labelable_contour_segments_local(cmat)
+                try
+                    clabel(cmat, 'Color', 'k', 'FontSize', 8);
+                catch ME
+                    warning('Contour labeling skipped for panel "%s": %s', panel_title, ME.message);
+                end
+            else
+                fprintf('Contour labeling skipped for panel "%s": no labelable contour segments.\n', panel_title);
+            end
+        end
     end
     hold off;
 
@@ -171,11 +242,10 @@ function plot_control_panel(ax, X, Y, field, cm, panel_title, colorbar_label, cl
     end
 
     axis off;
-    set(gca, 'Color', 'none');
+    set(gca, 'Color', 'w');
     set(gca, 'Layer', 'top');
     colormap(gca, cm);
 
-    panel_clim = resolve_panel_clim(field, clim_override);
     clim(panel_clim);
 
     title(panel_title, 'FontWeight', 'normal');
@@ -183,6 +253,31 @@ function plot_control_panel(ax, X, Y, field, cm, panel_title, colorbar_label, cl
 
     cb = colorbar('eastoutside');
     cb.Label.String = colorbar_label;
+end
+
+
+function rgb_field = map_field_to_rgb_with_nan_local(field, cm, clim_vals, nan_color)
+    ncolors = size(cm, 1);
+    rgb_field = zeros([size(field), 3]);
+
+    finite_mask = isfinite(field);
+    rgb_field(:, :, 1) = nan_color(1);
+    rgb_field(:, :, 2) = nan_color(2);
+    rgb_field(:, :, 3) = nan_color(3);
+
+    if ~any(finite_mask(:))
+        return;
+    end
+
+    scaled = (field - clim_vals(1)) ./ (clim_vals(2) - clim_vals(1));
+    scaled = min(max(scaled, 0), 1);
+    color_idx = floor(scaled * (ncolors - 1)) + 1;
+
+    for ichan = 1:3
+        channel = rgb_field(:, :, ichan);
+        channel(finite_mask) = cm(color_idx(finite_mask), ichan);
+        rgb_field(:, :, ichan) = channel;
+    end
 end
 
 
@@ -215,6 +310,29 @@ function contour_levels = resolve_contour_levels(field, contour_levels_override)
     end
 
     contour_levels = contour_levels_for_field(field, 9);
+end
+
+
+function tf = has_labelable_contour_segments_local(cmat)
+    if isempty(cmat) || size(cmat, 1) ~= 2 || size(cmat, 2) < 2
+        tf = false;
+        return;
+    end
+
+    tf = false;
+    idx = 1;
+    ncol = size(cmat, 2);
+    while idx <= ncol
+        npts = cmat(2, idx);
+        if ~isfinite(npts) || (npts < 2)
+            break;
+        end
+        if npts >= 3
+            tf = true;
+            return;
+        end
+        idx = idx + npts + 1;
+    end
 end
 
 

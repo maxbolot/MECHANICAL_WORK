@@ -19,6 +19,7 @@ Warming dataset note: in this project, "warming" corresponds to the simulation w
 3. Ensure level-2 organization under each level-1 directory:
    - `work/`
    - `precip/`
+4. Add region-aware organization for histogram products so multi-region diagnostics (including latitude-band partitions) are first-class in the layout.
 4. Safely migrate all hardcoded paths across the project with rollback options.
 
 ## Target Layout
@@ -57,10 +58,28 @@ Warming dataset note: in this project, "warming" corresponds to the simulation w
   histogram/
     work/
       control/
+        global/
+          all/
+        lat_band/
+          tropics/
+          nh_midlat/
+          sh_midlat/
       warming/
+        global/
+          all/
+        lat_band/
+          tropics/
+          nh_midlat/
+          sh_midlat/
     precip/
       (empty placeholder for schema consistency)
 ```
+
+Notes for histogram region structure:
+
+1. `region_family` examples: `global`, `lat_band`, `custom_box`, `mask`.
+2. `region_id` identifies one concrete region in that family (for example `all`, `tropics`, `band_30S_0`).
+3. Keep one histogram file per scenario + region family + region id + date range.
 
 ## Old to New Mapping Rules
 
@@ -70,6 +89,7 @@ Warming dataset note: in this project, "warming" corresponds to the simulation w
 2. `work_coarse_C3072_360x180*` -> `C3072_360x180/work/<scenario>/`
 3. `precip_coarse_C3072_360x180*` -> `C3072_360x180/precip/<scenario>/`
 4. `work_histograms*` -> `histogram/work/<scenario>/`
+  - region-aware target: `histogram/work/<scenario>/<region_family>/<region_id>/`
 
 ### Scenario suffix mapping
 
@@ -79,6 +99,16 @@ Warming dataset note: in this project, "warming" corresponds to the simulation w
 4. `_PLUS_4K_CO2_1270ppmv_prate_thresholded` -> `warming_prate_thresholded`
 5. `_prate_thresholded_by_lat_band` -> `control_prate_thresholded_by_lat_band`
 6. `_PLUS_4K_CO2_1270ppmv_prate_thresholded_by_lat_band` -> `warming_prate_thresholded_by_lat_band`
+
+### Region mapping for histogram products
+
+1. Existing tropical histogram products map to:
+  - `<region_family>=lat_band`
+  - `<region_id>=tropics`
+2. Existing global histogram products (if/when present) map to:
+  - `<region_family>=global`
+  - `<region_id>=all`
+3. Future regional products should not create new scenario names; they should use new region-family/region-id directories.
 
 ## Migration Phases
 
@@ -95,6 +125,7 @@ Warming dataset note: in this project, "warming" corresponds to the simulation w
 
 1. Create full destination directories under `/scratch/gpfs/mbolot/processed_data/GLOBALFV3`.
 2. Set permissions/ownership to match old tree.
+3. Pre-create region-family and region-id folders under `histogram/work/<scenario>/` for currently supported regions (at minimum `lat_band/tropics`).
 
 ## Phase 2: Data copy + verify (Days 2-7)
 
@@ -147,6 +178,10 @@ ln -s /scratch/gpfs/mbolot/processed_data/GLOBALFV3 /scratch/gpfs/mbolot/results
 - `script/postprocessing/concat_histograms.sh`
 - `script/postprocessing/check_hist_time_axis.sh`
 
+Histogram-specific roadmap note:
+
+- Update histogram concat/check scripts to resolve scenario + region family + region id paths, not scenario-only paths.
+
 ### Priority 2: MATLAB/Python defaults and presets
 
 - `matlab/presets/scenario_control.m`
@@ -186,6 +221,7 @@ Then construct all scenario paths from this root.
 1. Source vs destination file count parity per mapped folder.
 2. Source vs destination byte size parity.
 3. NetCDF spot checks (`ncdump -h`, `cdo sinfov`) for representative files.
+4. Histogram metadata checks include region identity attributes (for example `region_family`, `region_id`, and region bounds or equivalent region descriptors).
 
 ## Gate B: Code integrity
 
@@ -199,6 +235,7 @@ Then construct all scenario paths from this root.
 2. Warming standard workflow.
 3. Control thresholded workflow.
 4. Warming thresholded-by-lat-band workflow.
+5. Histogram retrieval and analysis for at least two distinct regions (for example `lat_band/tropics` and `global/all` when available).
 
 ## Rollback Plan
 
