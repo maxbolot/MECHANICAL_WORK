@@ -1,0 +1,310 @@
+CeCILL FREE SOFTWARE LICENSE AGREEMENT
+
+This Agreement is a Free Software license agreement that is the result
+of the commitment made by all its signatories to disclose their
+software creations and to permit the reuse of these creations on a
+broad basis.
+
+Version 2.1 of 21/06/2007.
+
+    PREAMBLE
+
+This Agreement is a Free Software license agreement compatible with the
+French law.
+
+This software is governed by the CeCILL license under French law and
+abiding by the rules of distribution of free software. You can use,
+modify and/ or redistribute the software under the terms of the CeCILL
+license as circulated by CEA, CNRS and INRIA at the following URL
+"http://www.cecill.info".
+
+As a counterpart to the access to the source code and the rights to
+copy, modify and redistribute granted by the license, users are
+provided only with a limited warranty and the software's author,
+licensor and distributor are excluded from any liability for damages.
+
+In this respect, the user's attention is drawn to the risks associated
+with loading, using, modifying and/or developing or reproducing the
+software by the user in light of its specific status of free software,
+that may mean that it is complicated to manipulate, and that also
+therefore means that it is reserved for developers and experienced
+professionals having in-depth computer knowledge. Users are therefore
+encouraged to load and test the software's suitability as regards
+their requirements in conditions enabling the security of their
+systems and/or data to be ensured and, more generally, to use and
+operate it in the same conditions of security.
+
+This Agreement may be freely reproduced and published, provided it is
+not altered, and that no provisions are omitted nor additions inserted.
+
+This Agreement may apply to any or all software for which the holder of
+the economic rights decides to submit the use thereof to its provisions.
+
+    DEFINITIONS
+
+In this Agreement, the following terms have the following meanings:
+
+Active: the Licensee shall be considered as Active regarding a
+software when the Licensee has declared that it uses the software and
+in particular has declared this either (i) through a direct or
+indirect communication addressed to the Licensor or to the public, in
+particular by means of an electronic mailing-list, of source code
+managing systems or of "bug tracking" systems, and (ii) in any other
+manner which logically makes the Licensor believe in a direct use by
+the Licensee.
+
+Commercial Use: any use of the software, other than research use,
+notably the use of the software within a company.
+
+Holder: the natural person who by not being in a situation of direct
+competition with the initial Licensor creates modifications of the
+software and communicates them to the initial Licensor so that they
+are incorporated within the software.
+
+Intellectual Property: all the elements of ownership concerning
+industrial and intellectual property rights and in particular the
+rights relating to software, inventions, utility models, industrial
+designs, trade marks, get-up, trade names and domain names.
+
+Initial Licensor: the natural or legal person that on the date of
+this Agreement is designated as such and who has the authority to
+grant licenses for software so designed and indicated as subject to
+the provisions of this Agreement.
+
+Licensor: the Initial Licensor and any other Holder who develops
+modifications of the software under the provisions of Article 4.3.a
+hereafter, who has accepted the provisions of this Agreement by
+downloading or using the software or by expressly accepting this
+Agreement in written form.
+
+Licensee or User: any natural or legal person who uses the software
+and in particular has the right to access and the right to use the
+software in all its uses.
+
+Modifications: all corrections, translations, adaptations, abridgements,
+expansions, enhancements and any other alterations whatsoever of the
+software, and any incorporation in the software of any software,
+routine or function developed by the Licensee.
+
+Module: a set of sources files including their documentation that
+permits to implement a set of functions or services in addition or
+different when this set and its associated documentation constitute a
+functional entity which can be independently used and re-utilized.
+
+Object code: the binary-form code resulting from the translation and
+any processing whatsoever of Source code.
+
+Source code: all the software's instructions and data files in their
+source state, including all the intermediate results of such processing.
+
+The Software: the software in Object code and/or Source code form,
+being either an initial version indicated in the header or any other
+version indicated in the header and more generally any software program
+contained in this Agreement.
+
+These expressions may be used in either singular or plural form.
+
+    ARTICLE 1 : OBJECT
+
+The aim of this Free Software license agreement is to grant users the
+right to use the Software in the widest sense of the word, as described
+below:
+
+1. Right of use: The Licensee is authorized to use the Software in any
+use, including commercial use, subject in all cases to the provisions
+of this Agreement.
+
+2. Right of study, modification and adaptation: The Licensee is
+authorized to study, modify, adapt the Software provided that he/she
+fully discloses modifications, under the conditions set out below:
+
+    The Licensee undertakes to disclose and communicate
+    modifications made to the software to the Initial Licensor within
+    thirty days from the date of completion.
+
+3. Right of representation, diffusion and diffusion of modifications:
+
+   The Licensee is authorized to represent, sell, lease, rent,
+   disclose, transmit or generally distribute the Software, as object
+   code and/or source code, but only under the following conditions:
+
+   The Licensee shall systematically disclose to the Licensor the
+   source code of any object code he distributes and inform the
+   Licensor that this software is distributed under the CeCILL
+   license. The Licensee undertakes to leave intact all copyright
+   notices on the software.
+
+   The Licensee shall systematically disclose to end-users the source
+   code of the distributed software.
+
+    ARTICLE 2: ACCEPTATION
+
+2.1 Full acceptation of the entire Agreement.
+
+Each Licensee acknowledges having read, and accepted the full
+provisions of this Agreement.
+
+2.2 Form of such acceptance.
+
+Such acceptance may be done (i) by implementing the obligation of
+Article 4.1 hereafter if this is the first Commercial Use of the
+Software by the Licensee or (ii) by implementing the obligation of
+Article 4.3.b hereafter if the Licensee modifies the Software or
+(iii) by simply using the Software and in any case before any
+Commercial Use.
+
+    ARTICLE 3: EFFECTIVE DATE
+
+This Agreement shall become effective on the date when the Licensee
+uses the Software in any manner whatsoever.
+
+    ARTICLE 4: RIGHTS AND OBLIGATIONS OF LICENSEES
+
+4.1. In the case of use for scientific purposes:
+
+a) The Licensee undertakes, according to the means and capacities
+which are his, to ensure continuity of the development of the Software.
+To this end the Licensee will communicate to the Licensor all
+improvements and modifications he makes to the Software. The Licensor
+will have the right to use freely these improvements and modifications.
+
+b) The Licensee undertakes to acknowledge the contribution of the
+Licensor in publications or communications having as their principal
+subject to describe functions or improvements of the Software. The
+Licensee commits himself at least to mention the name of the Licensor.
+
+4.2. Obligations specific to Commercial Use:
+
+If the Licensee makes commercial use of the Software, the Licensee
+agrees to inform the Initial Licensor in writing of this commercial
+use before the first commercial distribution.
+
+4.3. Obligations in the case of modification:
+
+a) In any case, the Licensee who modifies the Software shall permit
+the Licensor to incorporate his modifications within the Software
+unless he/she has accepted the provisions of clause 4.3.b below.
+
+b) The Licensee shall give the Initial Licensor the possibility within
+a period of three months to incorporate his/her modifications within
+the Software. It is reminded that the Initial Licensor has the right to
+refuse the incorporation of any modifications which it considers not
+appropriate according to its right of evaluation.
+
+c) If the Licensor refuses the incorporation of modifications, the
+Licensor shall provide detailed written reasons which will form an
+integral part of the dispute.
+
+d) If the Initial Licensor refuses the incorporation of modifications,
+the Licensee shall then have the right to use his modified version of
+the Software under the conditions set out in Article 1.
+
+e) The Licensee may, in any case, distribute the modified version
+under the CeCILL license subject to the obligation to disclose the
+source code to end-users and to inform them clearly and in a visible
+manner that the Software has been modified, specifying on which date
+these modifications have been made. The Licensee undertakes to cause
+the modified Software to be governed by this Agreement.
+
+4.4 Obligations as regards Passive Licensees:
+
+Each Licensee shall be an Active Licensee in relation to the Initial
+Licensor as soon as the Licensee makes a commercial use of the Software.
+The Initial Licensor may consider as a Passive Licensee any Licensee who
+does not communicate any improvement on the Software or does not make a
+declaration of commercial use within thirty days of the date when this
+Licensee was identified.
+
+    ARTICLE 5: INTELLECTUAL PROPERTY RIGHTS
+
+5.1 Test results:
+
+The Licensor undertakes to hold the Licensee harmless from any proceedings
+relating to Intellectual Property concerning the Software itself and
+particularly concerning the use, modification and distribution of the
+Software. Nevertheless, the Licensor does not undertake to hold the
+Licensee harmless in case of proceedings relating to the use of the
+Software in conjunction with other software, if said use was not included
+in the list of uses notified to the Licensor.
+
+5.2 Originating Rights:
+
+The Licensee expressly acknowledges that the Software is supplied "as is"
+and without warranty as to the exercise of any of the intellectual property
+rights incorporated into the Software. The Licensor makes no warranty or
+representation (express or implied) with respect to any Intellectual
+Property rights of third parties held by the Licensor.
+
+    ARTICLE 6: WARRANTY
+
+The Software is supplied "as is" without warranty of any sort. The Licensor
+disclaims all warranties, express, implied, statutory, or otherwise,
+including but not limited to any (if any) implied warranties of title,
+non-infringement, merchantability or fitness for a particular purpose
+relating to the Software.
+
+In particular, the Licensor does not warrant that the Software will satisfy
+the Licensee's requirements, that it will work with any equipment or
+application with which it might be used, or that it will work without
+interruption or error.
+
+    ARTICLE 7: LIMITATION OF LIABILITY
+
+Subject to the provisions of Article 6 above, the Licensor shall not be
+liable for any direct, indirect, incidental, special, exemplary, or
+consequential damages whatsoever, including without limitation damages for
+loss of profits, goodwill, work stoppage, computer malfunction or failure,
+or any and all other commercial damages or losses, even if advised of the
+possibility thereof, and notwithstanding any failure of essential purpose
+of any limited remedy.
+
+    ARTICLE 8: TERMINATION
+
+8.1 Termination of this Agreement may be pronounced on the initiative of
+the Licensor.
+
+8.2 The Licensor may, in the event of breach of the provisions of this
+Agreement by the Licensee, suspend the Licensee from the right to use the
+Software after a formal notice, sent by electronic mail to the last address
+of the Licensee if this one is available, thirty days after the date of
+said notice. If the Licensee has not regularized his situation before the
+expiration of this period of thirty days, the Licensor may terminate this
+Agreement and the associated license.
+
+8.3 In the event of termination of the Agreement as provided for in Article
+8.2, the termination shall not affect the rights granted to end-users under
+the present Agreement, as long as they comply with the conditions of the
+present Agreement.
+
+    ARTICLE 9: MISCELLANEOUS
+
+9.1 Severability. If any provision of this Agreement is held to be invalid
+or unenforceable for any reason, the validity and enforceability of the
+remaining provisions shall not be affected.
+
+9.2 Entire Agreement. This Agreement constitutes the entire agreement
+relating to the use of the Software.
+
+Any other prior agreement, whether written or oral, relating to the use of
+the Software is superseded hereby. In the event of any conflict between the
+provisions of this Agreement and any other document, the terms of this
+Agreement shall govern.
+
+9.3 French language. The original Agreement has been written in French and
+translated into English. In case of conflict or for an authoritative
+interpretation, reference is made to the French version. Licensees may
+request a translation into any language and agree to the fact that the
+Initial Licensor may use the translation as reference for interpreting the
+Agreement.
+
+9.4 Governing Law and Jurisdiction. This Agreement shall be governed by
+French law. Any litigation relating to the provisions of this Agreement
+shall be subject to the jurisdiction of the Tribunal de Grande Instance
+de Paris.
+
+    ARTICLE 10: LOCATION OF THE SOFTWARE
+
+The Software has been notified to the Agence pour la Protection des
+Programmes (APP) by:
+
+Centre National de la Recherche Scientifique - CNRS
