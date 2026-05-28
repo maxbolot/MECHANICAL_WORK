@@ -6,6 +6,7 @@ end
 addpath(fullfile(matlab_base_dir, 'lib'));
 addpath(fullfile(matlab_base_dir, 'analysis'));
 addpath(fullfile(matlab_base_dir, 'presets'));
+rehash path;
 
 cfg.scenario = scenario_plus4k();
 cfg.region = region_tropics();

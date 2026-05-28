@@ -93,7 +93,7 @@ if [[ -n "$RECOVER_TMP_DIR" ]]; then
   AUTO_TMP_DIR="false"
 fi
 
-for cmd in cdo ncrcat; do
+for cmd in cdo ncrcat ncks ncap2; do
   if ! command -v "$cmd" >/dev/null 2>&1; then
     echo "Error: required command '$cmd' is not in PATH." >&2
     exit 1
@@ -211,17 +211,48 @@ for i in "${!selected_inputs[@]}"; do
   fi
 
   if [[ "$should_remap" == "true" ]]; then
-    echo "Remapping $base_name -> $(basename "$out_file")"
-    cdo -L "${REMAP_METHOD},${TARGET_GRID}" "$in_file" "$out_file"
-
     if [[ "$SELECT_THRESHOLD_VARS" == "true" ]]; then
-      filtered_file="$TMP_DIR/filtered_$base_name"
-      echo "Selecting work,lift,event_count in $(basename "$out_file")"
-      if ! cdo -L selvar,work,lift,event_count "$out_file" "$filtered_file"; then
-        echo "Error: failed to keep only work,lift,event_count in $out_file" >&2
+      # Thresholded outputs store conditional means for work/lift and counts in
+      # event_count. We must not remap conditional means directly.
+      #
+      # Correct coarse-graining workflow:
+      # 1) reconstruct extensive numerators on source grid:
+      #      work_num = work * event_count
+      #      lift_num = lift * event_count
+      # 2) conservatively remap work_num, lift_num, and event_count together
+      # 3) reconstruct conditional means on target grid:
+      #      work = work_num / event_count
+      #      lift = lift_num / event_count
+      #    (set fill value when event_count == 0)
+
+      extracted_file="$TMP_DIR/extracted_$base_name"
+      remapped_num_file="$TMP_DIR/remapped_num_$base_name"
+
+      echo "Extracting work,lift,event_count from $base_name"
+      if ! ncks -O -v work,lift,event_count "$in_file" "$extracted_file"; then
+        echo "Error: failed to extract work,lift,event_count from $in_file" >&2
         exit 1
       fi
-      mv "$filtered_file" "$out_file"
+
+      echo "Building conditional-sum numerators in $(basename "$extracted_file")"
+      if ! ncap2 -O -s 'where(event_count>0.0){work=work*event_count;lift=lift*event_count;} elsewhere{work=0.0;lift=0.0;}' "$extracted_file" "$extracted_file"; then
+        echo "Error: failed to build numerator fields in $extracted_file" >&2
+        exit 1
+      fi
+
+      echo "Remapping numerators and event_count for $base_name -> $(basename "$out_file")"
+      cdo -L "${REMAP_METHOD},${TARGET_GRID}" "$extracted_file" "$remapped_num_file"
+
+      echo "Reconstructing conditional means on target grid in $(basename "$out_file")"
+      if ! ncap2 -O -s 'where(event_count>0.0){work=work/event_count;lift=lift/event_count;} elsewhere{work=-9999.0;lift=-9999.0;}' "$remapped_num_file" "$out_file"; then
+        echo "Error: failed to reconstruct conditional means in $remapped_num_file" >&2
+        exit 1
+      fi
+    else
+      # Non-thresholded fields are not conditional means, so direct remapping is
+      # mathematically consistent.
+      echo "Remapping $base_name -> $(basename "$out_file")"
+      cdo -L "${REMAP_METHOD},${TARGET_GRID}" "$in_file" "$out_file"
     fi
   else
     echo "Reusing completed remap: $base_name"

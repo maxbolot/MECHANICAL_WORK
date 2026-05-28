@@ -331,7 +331,15 @@ for i in "${!selected_inputs[@]}"; do
     fi
   fi
 
-  # Step 2: remap extracted precip to target grid.
+  # Step 2: remap to target grid.
+  #
+  # For thresholded modes, precip is a conditional mean over exceedance events,
+  # so we must not remap it directly. Instead:
+  #   1) precip_num = precip * event_count
+  #   2) remap precip_num and event_count together
+  #   3) precip = precip_num / event_count on target grid (fill when count=0)
+  #
+  # For non-thresholded modes, direct remapping of precip is appropriate.
   out_file="$TMP_DIR/remapped_$base_name"
   should_remap="true"
   if (( resume_from_index >= 0 )) && (( i < resume_from_index )) && [[ -f "$out_file" ]]; then
@@ -339,8 +347,27 @@ for i in "${!selected_inputs[@]}"; do
   fi
 
   if [[ "$should_remap" == "true" ]]; then
-    echo "Remapping $(basename "$extracted_file") -> $(basename "$out_file")"
-    cdo -L "${REMAP_METHOD},${TARGET_GRID}" "$extracted_file" "$out_file"
+    if [[ "$INCLUDE_EVENT_COUNT" == "true" ]]; then
+      remapped_num_file="$TMP_DIR/remapped_num_$base_name"
+
+      echo "Building precip numerator in $(basename "$extracted_file")"
+      if ! ncap2 -O -s 'where(event_count>0.0){precip=precip*event_count;} elsewhere{precip=0.0;}' "$extracted_file" "$extracted_file"; then
+        echo "Error: failed to build precip numerator in $extracted_file" >&2
+        exit 1
+      fi
+
+      echo "Remapping precip numerator and event_count for $base_name -> $(basename "$out_file")"
+      cdo -L "${REMAP_METHOD},${TARGET_GRID}" "$extracted_file" "$remapped_num_file"
+
+      echo "Reconstructing conditional precip on target grid in $(basename "$out_file")"
+      if ! ncap2 -O -s 'where(event_count>0.0){precip=precip/event_count;} elsewhere{precip=-9999.0;}' "$remapped_num_file" "$out_file"; then
+        echo "Error: failed to reconstruct conditional precip in $remapped_num_file" >&2
+        exit 1
+      fi
+    else
+      echo "Remapping $(basename "$extracted_file") -> $(basename "$out_file")"
+      cdo -L "${REMAP_METHOD},${TARGET_GRID}" "$extracted_file" "$out_file"
+    fi
   else
     echo "Reusing completed remap: $base_name"
   fi

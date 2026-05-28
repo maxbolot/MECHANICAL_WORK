@@ -1,11 +1,16 @@
-if ~exist('matlab_base_dir', 'var')
-    this_file = mfilename('fullpath');
-    script_dir = fileparts(this_file);
-    matlab_base_dir = fileparts(script_dir);
+this_file = mfilename('fullpath');
+if isempty(this_file)
+    this_file = which(mfilename());
 end
+if isempty(this_file)
+    error('Could not resolve path for %s.', mfilename());
+end
+script_dir = fileparts(this_file);
+matlab_base_dir = fileparts(script_dir);
 addpath(fullfile(matlab_base_dir, 'lib'));
 addpath(fullfile(matlab_base_dir, 'analysis'));
 addpath(fullfile(matlab_base_dir, 'presets'));
+rehash path;
 
 cfg.run_mode = 'wet_day_only';
 % Supported: non_thresholded | wet_day_only | prate_thresholded | prate_thresholded_by_lat_band
@@ -28,8 +33,8 @@ cfg.clim_hp = [0, 2e4];
 cfg.clim_precip = [0, 2.5e-4];
 
 % Optional manual contour levels per panel; leave empty for auto levels.
-cfg.contour_levels_hp = [];
-cfg.contour_levels_precip = [1e-10];
+cfg.contour_levels_hp = [-1e300];   % dummy
+cfg.contour_levels_precip = [1e-300];   % dummy
 
 % Toggle contour labels on/off.
 cfg.show_contour_labels = false;

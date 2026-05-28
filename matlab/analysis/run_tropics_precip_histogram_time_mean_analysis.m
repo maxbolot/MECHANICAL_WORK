@@ -53,7 +53,7 @@ function cfg = apply_defaults(cfg)
     end
 
     if ~isfield(cfg, 'ncfile')
-        cfg.ncfile = '/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms/hist_2020010300_2022011200.nc';
+        cfg.ncfile = fullfile(get_globalfv3_data_root(), 'work_histograms', 'hist_2020010300_2022011200.nc');
     end
     if ~isfield(cfg, 'time_weight_fn')
         cfg.time_weight_fn = @compute_time_weights_control;

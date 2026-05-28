@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from translated_from_matlab.lib.io import ensure_input_exists, read_required_var, read_standard_coordinates
+from translated_from_matlab.lib.paths import get_globalfv3_data_root
 from translated_from_matlab.lib.weights import compute_time_weights_control, compute_time_weights_plus4k, weighted_nanmean
 
 
@@ -58,13 +59,15 @@ def apply_defaults(cfg: Optional[dict] = None) -> WorkLiftAllRegionsConfig:
     if cfg is None:
         cfg = {}
 
+    data_root = get_globalfv3_data_root()
+
     control_file = cfg.get(
         "control_file",
-        "/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180/work_2020010300_2022011200.nc",
+        str(data_root / "work_coarse_C3072_360x180" / "work_2020010300_2022011200.nc"),
     )
     warming_file = cfg.get(
         "warming_file",
-        "/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv/work_2020010300_2022011800.nc",
+        str(data_root / "work_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv" / "work_2020010300_2022011800.nc"),
     )
     regions = cfg.get("regions", default_regions())
     make_plots = bool(cfg.get("make_plots", True))

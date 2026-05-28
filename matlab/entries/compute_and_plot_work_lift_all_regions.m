@@ -18,6 +18,7 @@ end
 
 addpath(fullfile(matlab_root, 'lib'));
 addpath(fullfile(matlab_root, 'analysis'));
+rehash path;
 
 cfg = struct();
 run_work_lift_all_regions_analysis(cfg);

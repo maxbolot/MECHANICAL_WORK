@@ -10,6 +10,38 @@ Current implementation details:
 - `event_count` is written as daily count of threshold exceedances.
 - Output is a single NetCDF file containing `work`, `lift`, and `event_count`.
 
+## MATLAB Data Root Auto-Detection
+
+MATLAB analysis scripts now resolve the GLOBALFV3 root through:
+
+- `matlab/lib/get_globalfv3_data_root.m`
+
+Resolution order:
+
+1. Use `GLOBALFV3_DATA_ROOT` if it is set.
+2. Otherwise, use OS defaults:
+   - Windows (`ispc`): `C:\climate_processed_data\GLOBALFV3`
+   - Unix/Linux (`isunix`): `/scratch/gpfs/mbolot/results/GLOBALFV3`
+
+This is used by `scenario_control`, `scenario_plus4k`, and histogram/work-lift wrappers via `fullfile(...)`, so filenames remain unchanged while only the root is environment-specific.
+
+### Recommended overrides
+
+- HPC shell:
+  ```bash
+  export GLOBALFV3_DATA_ROOT=/scratch/gpfs/mbolot/results/GLOBALFV3
+  ```
+
+- Windows MATLAB session:
+  ```matlab
+  setenv('GLOBALFV3_DATA_ROOT', 'C:\climate_processed_data\GLOBALFV3');
+  ```
+
+- WSL/Linux MATLAB session reading Windows files:
+  ```bash
+  export GLOBALFV3_DATA_ROOT=/mnt/c/climate_processed_data/GLOBALFV3
+  ```
+
 ## Components
 
 ### 1. `compute_prate_thresholds_by_lat_band.f90`

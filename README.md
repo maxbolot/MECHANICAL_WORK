@@ -2,7 +2,7 @@
 
 End-to-end workflow for computing mechanical work diagnostics from FV3 coarse-grained fields, post-processing outputs into analysis-ready products, and generating regional climatological summaries in MATLAB.
 
-Notebook content under `notebooks/` is provided for dissemination and sharing; MATLAB remains the authoritative analysis stack, and there is no roadmap to move away from MATLAB workflows.
+Notebook content under `notebooks/` is provided for dissemination and sharing. MATLAB remains the authoritative analysis stack for the current project phase. A staged port of the analysis stack from MATLAB to Julia is planned for a future phase, while MATLAB workflows remain the reference implementation until that work is scheduled and validated.
 
 The project is organized as a pipeline:
 
@@ -43,7 +43,9 @@ The project is organized as a pipeline:
     - `concat_histograms.sh`: concatenates per-date histogram files into a single date-range file.
 - `python/`
   - `make_ea_grid.py`: generates the CDO equal-area grid description file (`output/grids/ea_25km_grid.txt`) required by `script/preprocessing/ea_to_0.25_array.sh`.
+  - `translated_from_matlab/README.md`: translated Python workflow overview and environment-aware data-root configuration (`GLOBALFV3_DATA_ROOT`).
 - `matlab/`
+  - `README.md`: MATLAB workflow overview and environment-aware data-root configuration (`GLOBALFV3_DATA_ROOT`).
   - `entries/`: thin wrapper scripts that define config and call runners.
   - `analysis/`: runner/orchestration scripts.
   - `lib/`: shared MATLAB API helpers.
@@ -289,7 +291,12 @@ These checks do not modify files unless `REMOVE_SOURCE_FILES=1` is explicitly se
 
 - Collects canonical per-date work files (`work_YYYYMMDDHH.nc`).
 - If `*.taxis_repaired.nc` companions are present, uses them instead of original files.
-- Remaps each file with CDO (default `remapcon,r360x180`).
+- For non-thresholded simulations, remaps each file directly with CDO (default `remapcon,r360x180`).
+- For thresholded simulations (`*_prate_thresholded*`), treats `work` and `lift` as conditional means and applies a numerator/denominator-safe remap:
+  - builds source-grid numerators `work_num = work * event_count` and `lift_num = lift * event_count`
+  - remaps `work_num`, `lift_num`, and `event_count` to target grid
+  - reconstructs target-grid conditional means via division by remapped `event_count`
+  - assigns fill values where remapped `event_count == 0`
 - Concatenates remapped files with `ncrcat` into a date-range product:
   - `work_START_END.nc`
 
@@ -308,7 +315,12 @@ These checks do not modify files unless `REMOVE_SOURCE_FILES=1` is explicitly se
   - list-driven mode for `control`/`warming` from part1/part2 source roots and date lists.
   - directory mode for thresholded outputs from `work_prate_threshold*.nc` files.
 - Extracts precipitation into a unified variable name `precip` across all modes.
-- Remaps each file with CDO (default `remapcon,r360x180`).
+- For non-thresholded simulations, remaps each file directly with CDO (default `remapcon,r360x180`).
+- For thresholded simulations (`*_prate_thresholded*`), treats `precip` as a conditional mean and applies a numerator/denominator-safe remap:
+  - builds source-grid numerator `precip_num = precip * event_count`
+  - remaps `precip_num` and `event_count` to target grid
+  - reconstructs target-grid conditional mean via division by remapped `event_count`
+  - assigns fill value where remapped `event_count == 0`
 - Concatenates remapped files with `ncrcat` into:
   - `precip_START_END.nc`
 

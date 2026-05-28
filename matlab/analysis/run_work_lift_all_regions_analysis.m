@@ -50,11 +50,13 @@ function cfg = apply_defaults(cfg)
         cfg = struct();
     end
 
+    data_root = get_globalfv3_data_root();
+
     if ~isfield(cfg, 'control_file')
-        cfg.control_file = '/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180/work_2020010300_2022011200.nc';
+        cfg.control_file = fullfile(data_root, 'work_coarse_C3072_360x180', 'work_2020010300_2022011200.nc');
     end
     if ~isfield(cfg, 'warming_file')
-        cfg.warming_file = '/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv/work_2020010300_2022011800.nc';
+        cfg.warming_file = fullfile(data_root, 'work_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv', 'work_2020010300_2022011800.nc');
     end
     if ~isfield(cfg, 'regions')
         cfg.regions = { ...

@@ -5,7 +5,8 @@ This document tracks pending architecture and workflow improvements. Items below
 ## Scope note from README
 
 - MATLAB remains the authoritative analysis stack for this project.
-- Notebooks stay a dissemination layer; there is no planned migration away from MATLAB workflows.
+- Notebooks stay a dissemination layer in the current phase.
+- A staged port of the analysis stack from MATLAB to Julia is planned for a future phase; MATLAB remains the reference workflow until that migration is formally scheduled.
 
 ## 1) Histogram clamping options in precipitation binning
 

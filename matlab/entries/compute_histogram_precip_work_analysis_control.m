@@ -18,10 +18,11 @@ end
 
 addpath(fullfile(matlab_root, 'lib'));
 addpath(fullfile(matlab_root, 'analysis'));
+rehash path;
 
 cfg = struct();
 cfg.simulation_name = 'control';
-cfg.ncfile = '/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms/hist_2020010300_2022011200.nc';
+cfg.ncfile = fullfile(get_globalfv3_data_root(), 'work_histograms', 'hist_2020010300_2022011200.nc');
 cfg.time_weight_fn = @compute_time_weights_control;
 cfg.xmax = 1.5e-2;
 cfg.title_prefix = 'Control';
