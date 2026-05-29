@@ -22,6 +22,7 @@ module load intel/2021.1.2 hdf5/intel-2021.1/1.10.6 netcdf/intel-2021.1/hdf5-1.1
 
 SIMULATION="${SIMULATION:-control}"
 SELECT_THRESHOLD_VARS="false"
+ENFORCE_LAT_BAND_SAFE_COARSENING="false"
 
 case "$SIMULATION" in
   control)
@@ -51,12 +52,14 @@ case "$SIMULATION" in
     default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180_prate_thresholded_by_lat_band"
     file_prefix="work_prate_threshold_by_lat_band_"
     SELECT_THRESHOLD_VARS="true"
+    ENFORCE_LAT_BAND_SAFE_COARSENING="true"
     ;;
   warming_prate_thresholded_by_lat_band)
     default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv_prate_thresholded_by_lat_band"
     default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv_prate_thresholded_by_lat_band"
     file_prefix="work_prate_threshold_by_lat_band_"
     SELECT_THRESHOLD_VARS="true"
+    ENFORCE_LAT_BAND_SAFE_COARSENING="true"
     ;;
   *)
     echo "Error: unsupported SIMULATION='$SIMULATION'." >&2
@@ -76,6 +79,10 @@ OUT_DIR="${OUT_DIR:-$default_out_dir}"
 # CDO remapping operator. For coarse-graining, remapcon is usually appropriate.
 REMAP_METHOD="${REMAP_METHOD:-remapcon}"
 TARGET_GRID="${TARGET_GRID:-r360x180}"
+
+# For by-lat-band thresholded fields, avoid any chance of mixing values across
+# latitude-band boundaries by using exact 4x4 box averaging (1440x720 -> 360x180).
+LAT_BAND_SAFE_COARSENING="${LAT_BAND_SAFE_COARSENING:-$ENFORCE_LAT_BAND_SAFE_COARSENING}"
 
 # Optional recovery mode: point to an existing tmp_remap_* directory from a failed run.
 # Behavior:
@@ -164,6 +171,25 @@ for in_file in "${sorted_inputs[@]}"; do
   fi
 done
 
+if [[ "$LAT_BAND_SAFE_COARSENING" == "true" ]]; then
+  if [[ "$TARGET_GRID" != "r360x180" ]]; then
+    echo "Error: LAT_BAND_SAFE_COARSENING=true requires TARGET_GRID=r360x180." >&2
+    echo "Set LAT_BAND_SAFE_COARSENING=false to allow generic remapping." >&2
+    exit 1
+  fi
+
+  # Validate that input resolution is exactly 1440x720 before applying
+  # gridboxmean,4,4.
+  src_probe="${selected_inputs[0]}"
+  src_xsize="$(cdo -s griddes "$src_probe" | awk '$1=="xsize"{print $3; exit}')"
+  src_ysize="$(cdo -s griddes "$src_probe" | awk '$1=="ysize"{print $3; exit}')"
+  if [[ "$src_xsize" != "1440" || "$src_ysize" != "720" ]]; then
+    echo "Error: LAT_BAND_SAFE_COARSENING=true expects source grid 1440x720, got ${src_xsize}x${src_ysize}." >&2
+    echo "Set LAT_BAND_SAFE_COARSENING=false to allow generic remapping." >&2
+    exit 1
+  fi
+fi
+
 resume_from_label=""
 if [[ -n "$RECOVER_TMP_DIR" ]]; then
   if [[ ! -d "$RECOVER_TMP_DIR" ]]; then
@@ -241,7 +267,11 @@ for i in "${!selected_inputs[@]}"; do
       fi
 
       echo "Remapping numerators and event_count for $base_name -> $(basename "$out_file")"
-      cdo -L "${REMAP_METHOD},${TARGET_GRID}" "$extracted_file" "$remapped_num_file"
+      if [[ "$LAT_BAND_SAFE_COARSENING" == "true" ]]; then
+        cdo -L gridboxmean,4,4 "$extracted_file" "$remapped_num_file"
+      else
+        cdo -L "${REMAP_METHOD},${TARGET_GRID}" "$extracted_file" "$remapped_num_file"
+      fi
 
       echo "Reconstructing conditional means on target grid in $(basename "$out_file")"
       if ! ncap2 -O -s 'where(event_count>0.0){work=work/event_count;lift=lift/event_count;} elsewhere{work=-9999.0;lift=-9999.0;}' "$remapped_num_file" "$out_file"; then
@@ -252,7 +282,11 @@ for i in "${!selected_inputs[@]}"; do
       # Non-thresholded fields are not conditional means, so direct remapping is
       # mathematically consistent.
       echo "Remapping $base_name -> $(basename "$out_file")"
-      cdo -L "${REMAP_METHOD},${TARGET_GRID}" "$in_file" "$out_file"
+      if [[ "$LAT_BAND_SAFE_COARSENING" == "true" ]]; then
+        cdo -L gridboxmean,4,4 "$in_file" "$out_file"
+      else
+        cdo -L "${REMAP_METHOD},${TARGET_GRID}" "$in_file" "$out_file"
+      fi
     fi
   else
     echo "Reusing completed remap: $base_name"
