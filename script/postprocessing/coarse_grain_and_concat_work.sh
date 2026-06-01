@@ -20,6 +20,20 @@ fi
 module purge
 module load intel/2021.1.2 hdf5/intel-2021.1/1.10.6 netcdf/intel-2021.1/hdf5-1.10.6/4.7.4 cdo/netcdf-4.7.4/hdf5-1.10.6/2.0.1 nco/netcdf-4.7.4/hdf5-1.10.6/5.0.3
 
+# Path resolution (run-aware):
+#   Directory input mode:
+#     1) SRC_DIR (if set) wins.
+#     2) Else RUN_ID -> SRC_DIR_BASE/RUN_ID.
+#     3) Else legacy flat files in SRC_DIR_BASE -> use SRC_DIR_BASE.
+#     4) Else auto-pick latest run subdirectory in SRC_DIR_BASE.
+#   Output:
+#     1) OUT_DIR (if set) wins.
+#     2) Else if RUN_ID is known -> OUT_DIR_BASE/RUN_ID.
+#     3) Else -> OUT_DIR_BASE.
+#
+# For list-driven input modes, source roots/lists remain explicit and are not
+# inferred from RUN_ID.
+
 SIMULATION="${SIMULATION:-control}"
 SELECT_THRESHOLD_VARS="false"
 ENFORCE_LAT_BAND_SAFE_COARSENING="false"
@@ -70,11 +84,43 @@ esac
 
 # Source folder containing input files named like ${file_prefix}YYYYMMDDHH.nc.
 # Can be overridden via environment variable SRC_DIR.
-SRC_DIR="${SRC_DIR:-$default_src_dir}"
+RUN_ID="${RUN_ID:-}"
+SRC_DIR_BASE="${SRC_DIR_BASE:-$default_src_dir}"
+if [[ -z "${SRC_DIR:-}" ]]; then
+  if [[ "$INPUT_MODE" == "directory" ]]; then
+    if [[ -n "$RUN_ID" ]]; then
+      SRC_DIR="$SRC_DIR_BASE/$RUN_ID"
+    elif compgen -G "$SRC_DIR_BASE/${file_prefix}*.nc" > /dev/null; then
+      # Backward compatibility for legacy flat output layout.
+      SRC_DIR="$SRC_DIR_BASE"
+    else
+      latest_run="$(find "$SRC_DIR_BASE" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort | tail -n1)"
+      if [[ -n "$latest_run" ]]; then
+        SRC_DIR="$SRC_DIR_BASE/$latest_run"
+        RUN_ID="$latest_run"
+      else
+        SRC_DIR="$SRC_DIR_BASE"
+      fi
+    fi
+  else
+    SRC_DIR="$SRC_DIR_BASE"
+  fi
+else
+  SRC_DIR="$SRC_DIR"
+fi
 
 # Destination folder for intermediate and final outputs.
 # Can be overridden via environment variable OUT_DIR.
-OUT_DIR="${OUT_DIR:-$default_out_dir}"
+OUT_DIR_BASE="${OUT_DIR_BASE:-$default_out_dir}"
+if [[ -z "${OUT_DIR:-}" ]]; then
+  if [[ -n "$RUN_ID" ]]; then
+    OUT_DIR="$OUT_DIR_BASE/$RUN_ID"
+  else
+    OUT_DIR="$OUT_DIR_BASE"
+  fi
+else
+  OUT_DIR="$OUT_DIR"
+fi
 
 # CDO remapping operator. For coarse-graining, remapcon is usually appropriate.
 REMAP_METHOD="${REMAP_METHOD:-remapcon}"

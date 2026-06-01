@@ -3,15 +3,20 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
+MANIFEST_DIR=${MANIFEST_DIR:-$PROJECT_ROOT/logs/manifests}
+MANIFEST_TOOL=${MANIFEST_TOOL:-$PROJECT_ROOT/python/workflow_manifest.py}
 
 # Minimal one-date test launcher for compute_work_async.
 # Source root and date are intentionally hardcoded for quick validation.
 SOURCE_ROOT=/scratch/cimes/GLOBALFV3/20191020.00Z.C3072.L79x2_pire/history
 DATE=2020010300
 
-TARGET_DIR_COMPUTE=${TARGET_DIR_COMPUTE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_test}
-TARGET_DIR_HISTOGRAMS=${TARGET_DIR_HISTOGRAMS:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_test}
-LOG_DIR=${LOG_DIR:-$PROJECT_ROOT/logs}
+TARGET_DIR_COMPUTE_BASE=${TARGET_DIR_COMPUTE_BASE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_test}
+TARGET_DIR_HISTOGRAMS_BASE=${TARGET_DIR_HISTOGRAMS_BASE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_test}
+TARGET_DIR_COMPUTE=${TARGET_DIR_COMPUTE:-$TARGET_DIR_COMPUTE_BASE/$RUN_ID}
+TARGET_DIR_HISTOGRAMS=${TARGET_DIR_HISTOGRAMS:-$TARGET_DIR_HISTOGRAMS_BASE/$RUN_ID}
+LOG_DIR=${LOG_DIR:-$PROJECT_ROOT/logs/slurm}
 NAMELIST_DIR=$PROJECT_ROOT/output/namelists
 
 module purge || true
@@ -41,7 +46,36 @@ if [[ ! -d "$source_dir" ]]; then
     exit 1
 fi
 
-mkdir -p "$TARGET_DIR_COMPUTE" "$TARGET_DIR_HISTOGRAMS" "$LOG_DIR" "$NAMELIST_DIR"
+mkdir -p "$TARGET_DIR_COMPUTE" "$TARGET_DIR_HISTOGRAMS" "$LOG_DIR" "$MANIFEST_DIR" "$NAMELIST_DIR"
+
+manifest_path="$MANIFEST_DIR/work/manifest_work_${RUN_ID}.json"
+cat << EOF | python3 "$MANIFEST_TOOL" --output "$manifest_path" --workflow-type work --run-id "$RUN_ID" --project-root "$PROJECT_ROOT" --launcher "launcher/compute_work_async_test_noslurm.sh" --mode "noslurm" --root "$TARGET_DIR_COMPUTE_BASE"
+{
+    "simulation": "test",
+    "date": "$DATE",
+    "source_roots": {
+        "part1": "$SOURCE_ROOT",
+        "part2": "$SOURCE_ROOT"
+    },
+    "resources": {
+        "omp_num_threads": "$OMP_NUM_THREADS"
+    },
+    "log_dir": "$LOG_DIR",
+    "output": {
+        "compute_base": "$TARGET_DIR_COMPUTE_BASE",
+        "hist_base": "$TARGET_DIR_HISTOGRAMS_BASE",
+        "compute_dir": "$TARGET_DIR_COMPUTE",
+        "hist_dir": "$TARGET_DIR_HISTOGRAMS"
+    },
+    "thresholding_enabled": false,
+    "lat_banding": {
+        "enabled": false,
+        "nlat_bands": null,
+        "use_custom_bounds": false,
+        "custom_bounds": ""
+    }
+}
+EOF
 
 RUN_LOG="$LOG_DIR/compute_work_async_test_${DATE}_$(date +%Y%m%d_%H%M%S).log"
 CONFIG_FILE="$NAMELIST_DIR/config_test_${DATE}_$$.nml"

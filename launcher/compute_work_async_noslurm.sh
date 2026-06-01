@@ -3,6 +3,10 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
+LOG_DIR=${LOG_DIR:-$PROJECT_ROOT/logs/slurm}
+MANIFEST_DIR=${MANIFEST_DIR:-$PROJECT_ROOT/logs/manifests}
+MANIFEST_TOOL=${MANIFEST_TOOL:-$PROJECT_ROOT/python/workflow_manifest.py}
 
 # Serial runner for systems without Slurm.
 # Dates are read from two list files, each mapped to its own source root.
@@ -15,16 +19,16 @@ case "$SIMULATION" in
         SOURCE_ROOT_PART2=/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire/pp
         LIST_FILE_PART1=${LIST_FILE_PART1:-$PROJECT_ROOT/launcher/list/list_control_part1.txt}
         LIST_FILE_PART2=${LIST_FILE_PART2:-$PROJECT_ROOT/launcher/list/list_control_part2.txt}
-        TARGET_DIR_COMPUTE=${TARGET_DIR_COMPUTE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720}
-        TARGET_DIR_HISTOGRAMS=${TARGET_DIR_HISTOGRAMS:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms}
+        TARGET_DIR_COMPUTE_BASE=${TARGET_DIR_COMPUTE_BASE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720}
+        TARGET_DIR_HISTOGRAMS_BASE=${TARGET_DIR_HISTOGRAMS_BASE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms}
         ;;
     warming)
         SOURCE_ROOT_PART1=/scratch/cimes/GLOBALFV3/stellar_run/processed/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp
         SOURCE_ROOT_PART2=/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp
         LIST_FILE_PART1=${LIST_FILE_PART1:-$PROJECT_ROOT/launcher/list/list_PLUS_4K_CO2_1270ppmv_part1.txt}
         LIST_FILE_PART2=${LIST_FILE_PART2:-$PROJECT_ROOT/launcher/list/list_PLUS_4K_CO2_1270ppmv_part2.txt}
-        TARGET_DIR_COMPUTE=${TARGET_DIR_COMPUTE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv}
-        TARGET_DIR_HISTOGRAMS=${TARGET_DIR_HISTOGRAMS:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_PLUS_4K_CO2_1270ppmv}
+        TARGET_DIR_COMPUTE_BASE=${TARGET_DIR_COMPUTE_BASE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv}
+        TARGET_DIR_HISTOGRAMS_BASE=${TARGET_DIR_HISTOGRAMS_BASE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_PLUS_4K_CO2_1270ppmv}
         ;;
     *)
         echo "Error: unsupported SIMULATION='$SIMULATION'. Use 'control' or 'warming'." >&2
@@ -32,13 +36,15 @@ case "$SIMULATION" in
         ;;
 esac
 
+TARGET_DIR_COMPUTE=${TARGET_DIR_COMPUTE:-$TARGET_DIR_COMPUTE_BASE/$RUN_ID}
+TARGET_DIR_HISTOGRAMS=${TARGET_DIR_HISTOGRAMS:-$TARGET_DIR_HISTOGRAMS_BASE/$RUN_ID}
+
 module purge || true
 module load intel-oneapi/2024.2 hdf5/oneapi-2024.2/1.14.4 netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2
 
 # Hardcoded OpenMP setting for serial execution.
 export OMP_NUM_THREADS=2
 
-LOG_DIR=$PROJECT_ROOT/logs
 NAMELIST_DIR=$PROJECT_ROOT/output/namelists
 
 # Prefer local/bin build output, fallback to legacy bin path.
@@ -73,7 +79,39 @@ if [[ ! -x "$COMPUTE_WORK_BIN" ]]; then
     exit 1
 fi
 
-mkdir -p "$TARGET_DIR_COMPUTE" "$TARGET_DIR_HISTOGRAMS" "$LOG_DIR" "$NAMELIST_DIR"
+mkdir -p "$TARGET_DIR_COMPUTE" "$TARGET_DIR_HISTOGRAMS" "$LOG_DIR" "$MANIFEST_DIR" "$NAMELIST_DIR"
+
+manifest_path="$MANIFEST_DIR/work/manifest_work_${RUN_ID}.json"
+cat << EOF | python3 "$MANIFEST_TOOL" --output "$manifest_path" --workflow-type work --run-id "$RUN_ID" --project-root "$PROJECT_ROOT" --launcher "launcher/compute_work_async_noslurm.sh" --mode "noslurm" --root "$TARGET_DIR_COMPUTE_BASE"
+{
+    "simulation": "$SIMULATION",
+    "list_files": {
+        "part1": "$LIST_FILE_PART1",
+        "part2": "$LIST_FILE_PART2"
+    },
+    "source_roots": {
+        "part1": "$SOURCE_ROOT_PART1",
+        "part2": "$SOURCE_ROOT_PART2"
+    },
+    "resources": {
+        "omp_num_threads": "$OMP_NUM_THREADS"
+    },
+    "log_dir": "$LOG_DIR",
+    "output": {
+        "compute_base": "$TARGET_DIR_COMPUTE_BASE",
+        "hist_base": "$TARGET_DIR_HISTOGRAMS_BASE",
+        "compute_dir": "$TARGET_DIR_COMPUTE",
+        "hist_dir": "$TARGET_DIR_HISTOGRAMS"
+    },
+    "thresholding_enabled": false,
+    "lat_banding": {
+        "enabled": false,
+        "nlat_bands": null,
+        "use_custom_bounds": false,
+        "custom_bounds": ""
+    }
+}
+EOF
 
 RUN_LOG="$LOG_DIR/compute_work_noslurm_$(date +%Y%m%d_%H%M%S).log"
 echo "[$(date +%F\ %T)] Starting serial run for simulation: $SIMULATION" | tee -a "$RUN_LOG"

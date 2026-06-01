@@ -18,6 +18,7 @@ The project is organized as a pipeline:
 - `local/`
   - `src/compute_work.f90`: baseline Fortran implementation.
   - `src/compute_work_async.f90`: async/pipelined Fortran implementation (current default binary in launchers).
+  - `src/compute_work_async_histograms_by_lat_band.f90`: async histogram-only monthly aggregator with configurable latitude bands.
   - `src/compute_prate_thresholds.f90`: two-pass precipitation-threshold generator.
   - `src/compute_work_async_prate_threshold.f90`: async work/lift fork with precipitation-threshold masking.
   - `Makefile`: build rules for both binaries.
@@ -31,6 +32,9 @@ The project is organized as a pipeline:
   - `compute_prate_threshold_noslurm.sh`: serial launcher for percentile threshold generation.
   - `compute_work_async_prate_threshold_array.sh`: Slurm array launcher for thresholded async work/lift.
   - `compute_work_async_prate_threshold_noslurm.sh`: serial launcher for thresholded async work/lift.
+  - `compute_work_async_histograms_by_lat_band_array.sh`: Slurm array launcher for monthly histogram-only outputs by latitude band.
+  - `compute_work_async_histograms_by_lat_band_noslurm.sh`: serial launcher for monthly histogram-only outputs by latitude band.
+  - `namelist_template_histograms_by_lat_band.nml`: compact namelist template for the histogram-by-lat-band executable.
   - `list/`: simulation-specific date lists for part1/part2 source roots.
 - `script/`
   - `preprocessing/`
@@ -154,6 +158,7 @@ Targets:
 
 - `bin/compute_work`
 - `bin/compute_work_async`
+- `bin/compute_work_async_histograms_by_lat_band`
 - `bin/compute_prate_thresholds`
 - `bin/compute_work_async_prate_threshold`
 
@@ -238,6 +243,42 @@ Thresholded async work/lift launchers:
   - control: `output/thresholds/thresholds_control.txt`
   - warming: `output/thresholds/thresholds_warming.txt`
 - Produce threshold-masked work NetCDF outputs per date.
+
+### `launcher/compute_work_async_histograms_by_lat_band_array.sh` and `launcher/compute_work_async_histograms_by_lat_band_noslurm.sh`
+
+Histogram-only monthly launchers:
+
+- Use `SIMULATION=${SIMULATION:-control}` to choose control or warming source trees.
+- Read dates from paired `LIST_FILE_PART1` and `LIST_FILE_PART2` and map each date to the matching source root.
+- Run `compute_work_async_histograms_by_lat_band` and write one histogram NetCDF output per date.
+- Support configurable latitude bands via environment-driven namelist fields:
+  - `NLAT_BANDS`
+  - `USE_CUSTOM_LAT_BAND_BOUNDS`
+  - `LAT_BAND_BOUNDS` (comma-separated boundary list)
+- Default output roots:
+  - control: `/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_monthly_by_lat_band`
+  - warming: `/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_monthly_by_lat_band_PLUS_4K_CO2_1270ppmv`
+
+### Launcher Environment Overrides (Run-Aware Layout)
+
+All launchers now support a run-id layer in outputs and split logging paths.
+
+- `RUN_ID`: run identifier used as an extra output path layer. Default: UTC timestamp (`YYYYMMDDTHHMMSSZ`).
+- `LOG_DIR`: stdout/stderr and run logs location. Default: `logs/slurm`.
+- `MANIFEST_DIR`: JSON provenance manifests location. Default: `logs/manifests`.
+- `MANIFEST_TOOL`: manifest writer script. Default: `python/workflow_manifest.py`.
+
+Common base-path overrides (launcher-specific):
+
+- `TARGET_DIR_COMPUTE_BASE`: base directory for per-date work outputs (effective output is `<base>/<RUN_ID>`).
+- `TARGET_DIR_HIST_BASE`: base directory for histogram outputs (effective output is `<base>/<RUN_ID>`).
+- `OUTPUT_DIR_BASE`: base directory for threshold files (effective output is `<base>/<RUN_ID>/<filename>`).
+
+Manifest files are written at launcher startup and grouped by workflow family:
+
+- Work launchers: `manifest_work_<RUN_ID>.json`
+- Histogram launchers: `manifest_histograms_<RUN_ID>.json`
+- Threshold launchers: `manifest_thresholds_<RUN_ID>.json`
 
 ### Common Launcher Override Pattern
 

@@ -11,6 +11,15 @@ set -euo pipefail
 #      REMOVE_SOURCE_FILES=1.
 #
 # The script never modifies source files unless REMOVE_SOURCE_FILES=1.
+#
+# Path resolution (run-aware):
+#   1) If SRC_DIR is set, it is used directly.
+#   2) Else if RUN_ID is set, source defaults to SRC_DIR_BASE/RUN_ID.
+#   3) Else if legacy flat files exist in SRC_DIR_BASE, legacy layout is used.
+#   4) Else the latest run subdirectory under SRC_DIR_BASE is used.
+#
+# This keeps backward compatibility while making run-scoped outputs the default
+# when no flat legacy files are present.
 
 # Ensure module command is available in non-interactive shells, then load tools.
 if ! type module >/dev/null 2>&1; then
@@ -67,7 +76,26 @@ case "$SIMULATION" in
 esac
 
 # SRC_DIR can still be explicitly overridden for ad-hoc runs.
-SRC_DIR="${SRC_DIR:-$default_src_dir}"
+RUN_ID="${RUN_ID:-}"
+SRC_DIR_BASE="${SRC_DIR_BASE:-$default_src_dir}"
+if [[ -z "${SRC_DIR:-}" ]]; then
+  if [[ -n "$RUN_ID" ]]; then
+    SRC_DIR="$SRC_DIR_BASE/$RUN_ID"
+  elif compgen -G "$SRC_DIR_BASE/${file_prefix}*.nc" > /dev/null; then
+    # Backward compatibility for legacy flat output layout.
+    SRC_DIR="$SRC_DIR_BASE"
+  else
+    latest_run="$(find "$SRC_DIR_BASE" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort | tail -n1)"
+    if [[ -n "$latest_run" ]]; then
+      SRC_DIR="$SRC_DIR_BASE/$latest_run"
+      RUN_ID="$latest_run"
+    else
+      SRC_DIR="$SRC_DIR_BASE"
+    fi
+  fi
+else
+  SRC_DIR="$SRC_DIR"
+fi
 # Maximum tolerated drift between expected and observed first timestamp.
 MAX_DIFF_DAYS="${MAX_DIFF_DAYS:-5}"
 # DRY_RUN=1 prints planned deletions without removing files.

@@ -240,3 +240,32 @@ To verify correctness:
 
 - `compute_prate_thresholds.f90`: Single-domain threshold computation (original)
 - `compute_work_async_prate_threshold.f90`: Single-domain work/lift computation (original)
+
+## Monthly Histogram-Only by Latitude Band
+
+The new executable `compute_work_async_histograms_by_lat_band` computes histogram-only
+outputs with monthly aggregation and a latitude-band dimension.
+
+Outputs written by this program:
+
+- `hist_area(time, nbin_pr, nlat)`
+- `hist_work(time, nbin_pr, nlat)`
+- `hist_lift(time, nbin_pr, nlat)`
+- `hist2d_work(time, nbin_work, nbin_pr, nlat)`
+- `hist2d_lift(time, nbin_work, nbin_pr, nlat)`
+
+Launchers:
+
+- `launcher/compute_work_async_histograms_by_lat_band_noslurm.sh`
+- `launcher/compute_work_async_histograms_by_lat_band_array.sh`
+
+Template namelist:
+
+- `launcher/namelist_template_histograms_by_lat_band.nml`
+
+Latitude bands are configured with:
+
+- `nlat_bands`
+- `use_custom_lat_band_bounds`
+- `lat_band_bounds_count`
+- `lat_band_bounds`

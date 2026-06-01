@@ -11,9 +11,8 @@ program compute_prate_thresholds_by_lat_band
     integer, parameter :: nbins = 1200
     integer, parameter :: nedges = nbins + 1
     integer, parameter :: npercentiles = 11
-    integer, parameter :: nlat_bands = 18
-    ! Latitude bands: 18 × 10-degree bands from -90 to +90
-    ! Band 1: [-90, -80], Band 2: [-80, -70], ..., Band 18: [80, 90]
+    integer, parameter :: default_nlat_bands = 18
+    integer, parameter :: max_lat_band_bounds = 181
 
     character(len=1024) :: filenml, msg
     character(len=1024) :: history_root_part1, history_root_part2
@@ -28,22 +27,32 @@ program compute_prate_thresholds_by_lat_band
     real(8), allocatable :: cdf_edges(:)
     real(8), allocatable :: percentile_values(:)
     real(8), allocatable :: thresholds(:,:)
+    real(8), allocatable :: lat_ref(:)
+    real(8), allocatable :: lat_band_south(:), lat_band_north(:)
+    integer, allocatable :: lat_band_start(:), lat_band_end(:)
 
     logical :: have_grid
-    logical :: have_clip
+    logical :: use_custom_lat_band_bounds
     integer :: ndates
-    integer :: idate
     integer :: tmp_unit, ios
-    integer :: lat_clip_start, lat_clip_end, lon_clip_start, lon_clip_end
+    integer :: lon_clip_start, lon_clip_end
     integer :: ilat
+    integer :: nlat_bands
+    integer :: lat_band_bounds_count
+    real(8) :: lat_band_bounds(max_lat_band_bounds)
 
-    namelist /config/ history_root_part1, history_root_part2, date_list_file_part1, date_list_file_part2, output_file
+    namelist /config/ history_root_part1, history_root_part2, date_list_file_part1, date_list_file_part2, output_file, &
+                      nlat_bands, lat_band_bounds_count, lat_band_bounds, use_custom_lat_band_bounds
 
     history_root_part1 = ''
     history_root_part2 = ''
     date_list_file_part1 = ''
     date_list_file_part2 = ''
     output_file = 'thresholds_control_by_lat_band.txt'
+    nlat_bands = default_nlat_bands
+    lat_band_bounds_count = 0
+    use_custom_lat_band_bounds = .false.
+    lat_band_bounds = 1.0d99
 
     call get_command_argument(1, filenml)
     if (len_trim(filenml) == 0) then
@@ -87,20 +96,38 @@ program compute_prate_thresholds_by_lat_band
     allocate(bin_edges(nedges))
     call init_piecewise_log_bins(bin_edges)
 
+    if (nlat_bands <= 0) then
+        write(error_unit,*) 'nlat_bands must be positive.'
+        stop 1
+    end if
+    if (nlat_bands > max_lat_band_bounds - 1) then
+        write(error_unit,*) 'nlat_bands exceeds supported maximum.'
+        stop 1
+    end if
+    if (use_custom_lat_band_bounds) then
+        if (lat_band_bounds_count /= nlat_bands + 1) then
+            write(error_unit,*) 'lat_band_bounds_count must equal nlat_bands + 1 when custom bounds are enabled.'
+            stop 1
+        end if
+    end if
+
+    allocate(lat_band_south(nlat_bands), lat_band_north(nlat_bands))
+    allocate(lat_band_start(nlat_bands), lat_band_end(nlat_bands))
+    call resolve_lat_band_boundaries(nlat_bands, lat_band_bounds_count, use_custom_lat_band_bounds, lat_band_bounds, lat_band_south, lat_band_north)
+
     ! Allocate histogram for all latitude bands: (nbins, nlat_bands)
     allocate(hist_area_out(nbins, nlat_bands))
     hist_area_out = 0.0d0
 
     have_grid = .false.
-    have_clip = .false.
 
     ! Pass 1: parse all precipitation files from part1 and part2 and accumulate area-weighted histogram per lat band.
     call process_history_list_pair(trim(adjustl(history_root_part1)), trim(adjustl(date_list_file_part1)), &
-                                   bin_edges, hist_area_out, cell_area, have_grid, have_clip, &
-                                   lat_clip_start, lat_clip_end, lon_clip_start, lon_clip_end)
+                                   bin_edges, hist_area_out, cell_area, lat_ref, have_grid, &
+                                   lon_clip_start, lon_clip_end, lat_band_south, lat_band_north, lat_band_start, lat_band_end)
     call process_history_list_pair(trim(adjustl(history_root_part2)), trim(adjustl(date_list_file_part2)), &
-                                   bin_edges, hist_area_out, cell_area, have_grid, have_clip, &
-                                   lat_clip_start, lat_clip_end, lon_clip_start, lon_clip_end)
+                                   bin_edges, hist_area_out, cell_area, lat_ref, have_grid, &
+                                   lon_clip_start, lon_clip_end, lat_band_south, lat_band_north, lat_band_start, lat_band_end)
 
     allocate(cdf_edges(nedges))
     allocate(percentile_values(npercentiles))
@@ -124,15 +151,17 @@ program compute_prate_thresholds_by_lat_band
 
 contains
 
-    subroutine process_history_list_pair(root, list_file, edges, hist_accum, area_ref, have_grid_ref, have_clip_ref, &
-                                         lat_clip_start_ref, lat_clip_end_ref, lon_clip_start_ref, lon_clip_end_ref)
+    subroutine process_history_list_pair(root, list_file, edges, hist_accum, area_ref, lat_ref, have_grid_ref, &
+                                         lon_clip_start_ref, lon_clip_end_ref, lat_south_ref, lat_north_ref, lat_start_ref, lat_end_ref)
         character(len=*), intent(in) :: root, list_file
         real(8), intent(in) :: edges(:)
         real(8), intent(inout) :: hist_accum(:,:)
         real(8), allocatable, intent(inout) :: area_ref(:,:)
+        real(8), allocatable, intent(inout) :: lat_ref(:)
         logical, intent(inout) :: have_grid_ref
-        logical, intent(inout) :: have_clip_ref
-        integer, intent(inout) :: lat_clip_start_ref, lat_clip_end_ref, lon_clip_start_ref, lon_clip_end_ref
+        integer, intent(inout) :: lon_clip_start_ref, lon_clip_end_ref
+        real(8), intent(in) :: lat_south_ref(:), lat_north_ref(:)
+        integer, intent(inout) :: lat_start_ref(:), lat_end_ref(:)
 
         integer :: i
 
@@ -144,8 +173,8 @@ contains
 
         do i = 1, ndates
             call build_prate_path(trim(adjustl(root)), trim(adjustl(dates(i))), input_path)
-            call accumulate_hist_from_file_by_lat_band(trim(adjustl(input_path)), edges, hist_accum, area_ref, have_grid_ref, have_clip_ref, &
-                                           lat_clip_start_ref, lat_clip_end_ref, lon_clip_start_ref, lon_clip_end_ref)
+            call accumulate_hist_from_file_by_lat_band(trim(adjustl(input_path)), edges, hist_accum, area_ref, lat_ref, have_grid_ref, &
+                                           lon_clip_start_ref, lon_clip_end_ref, lat_south_ref, lat_north_ref, lat_start_ref, lat_end_ref)
         end do
 
         if (allocated(dates)) deallocate(dates)
@@ -240,15 +269,17 @@ contains
         end do
     end subroutine init_piecewise_log_bins
 
-    subroutine accumulate_hist_from_file_by_lat_band(path_in, edges, hist_accum, area_ref, have_grid_ref, have_clip_ref, &
-                                         lat_clip_start_ref, lat_clip_end_ref, lon_clip_start_ref, lon_clip_end_ref)
+    subroutine accumulate_hist_from_file_by_lat_band(path_in, edges, hist_accum, area_ref, lat_ref, have_grid_ref, &
+                                         lon_clip_start_ref, lon_clip_end_ref, lat_south_ref, lat_north_ref, lat_start_ref, lat_end_ref)
         character(len=*), intent(in) :: path_in
         real(8), intent(in) :: edges(:)
         real(8), intent(inout) :: hist_accum(:,:)
         real(8), allocatable, intent(inout) :: area_ref(:,:)
+        real(8), allocatable, intent(inout) :: lat_ref(:)
         logical, intent(inout) :: have_grid_ref
-        logical, intent(inout) :: have_clip_ref
-        integer, intent(inout) :: lat_clip_start_ref, lat_clip_end_ref, lon_clip_start_ref, lon_clip_end_ref
+        integer, intent(inout) :: lon_clip_start_ref, lon_clip_end_ref
+        real(8), intent(in) :: lat_south_ref(:), lat_north_ref(:)
+        integer, intent(inout) :: lat_start_ref(:), lat_end_ref(:)
 
         integer :: ncid_in, varid_pr
         integer :: varid_lon, varid_lat
@@ -256,13 +287,12 @@ contains
         integer :: dimids(nf90_max_var_dims)
         integer :: nx, ny, n3, n4
         integer :: dlen
-        integer :: k3, k4, ilat, jlat
+        integer :: k3, k4, ilat
 
         real(8), allocatable :: lon(:), lat(:)
         real(8), allocatable :: pr3d(:,:,:)
         real(8), allocatable :: hist_area_chunk(:)
-        real(8) :: lat_south_band, lat_north_band
-        integer :: lat_start_band, lat_end_band, lat_start_clip, lat_end_clip
+        integer :: lat_start_band, lat_end_band
 
         call check(nf90_open(trim(path_in), nf90_nowrite, ncid_in))
         call check(nf90_inq_varid(ncid_in, 'PRATEsfc_coarse', varid_pr))
@@ -298,6 +328,11 @@ contains
             ! Global longitude clip to 0:360 (full domain)
             lon_clip_start_ref = 1
             lon_clip_end_ref = nx
+            allocate(lat_ref(ny))
+            lat_ref = lat
+            do ilat = 1, size(lat_start_ref)
+                call resolve_lat_band_indices(lat_ref, lat_south_ref(ilat), lat_north_ref(ilat), lat_start_ref(ilat), lat_end_ref(ilat))
+            end do
             deallocate(lon, lat)
             have_grid_ref = .true.
         else
@@ -309,26 +344,22 @@ contains
                 write(error_unit,*) 'Grid mismatch for file: ', trim(path_in)
                 stop 1
             end if
+            if (.not. allocated(lat_ref)) then
+                write(error_unit,*) 'Internal error: lat_ref should be allocated when have_grid_ref=true'
+                stop 1
+            end if
+            if (size(lat_ref) /= ny) then
+                write(error_unit,*) 'Latitude size mismatch for file: ', trim(path_in)
+                stop 1
+            end if
         end if
 
         allocate(pr3d(nx, ny, 1))
 
-        ! Read latitude grid if not already done
-        if (.not. have_clip_ref) then
-            allocate(lat(ny))
-            call check(nf90_inq_varid(ncid_in, 'grid_yt_coarse', varid_lat))
-            call check(nf90_get_var(ncid_in, varid_lat, lat))
-            have_clip_ref = .true.
-        end if
-
         ! Process each latitude band separately
-        do ilat = 1, nlat_bands
-            ! Band ilat covers latitude from lat_south_band to lat_north_band (in 10-degree increments)
-            lat_south_band = -90.0d0 + dble(ilat - 1) * 10.0d0
-            lat_north_band = lat_south_band + 10.0d0
-
-            ! Find indices in the native latitude grid that fall within this band
-            call resolve_lat_band_indices(lat, lat_south_band, lat_north_band, lat_start_band, lat_end_band)
+        do ilat = 1, size(lat_start_ref)
+            lat_start_band = lat_start_ref(ilat)
+            lat_end_band = lat_end_ref(ilat)
 
             if (lat_start_band > lat_end_band) then
                 cycle  ! No data in this band
@@ -357,7 +388,6 @@ contains
         end do
 
         if (allocated(pr3d)) deallocate(pr3d)
-        if (allocated(lat)) deallocate(lat)
 
         call check(nf90_close(ncid_in))
 
@@ -366,6 +396,26 @@ contains
             write(*,*) 'Processed file: ', trim(path_in)
         end if
     end subroutine accumulate_hist_from_file_by_lat_band
+
+    subroutine resolve_lat_band_boundaries(nlat_in, count_in, custom_in, bounds_in, south_out, north_out)
+        integer, intent(in) :: nlat_in, count_in
+        logical, intent(in) :: custom_in
+        real(8), intent(in) :: bounds_in(:)
+        real(8), intent(out) :: south_out(:), north_out(:)
+        integer :: i
+
+        if (custom_in) then
+            do i = 1, nlat_in
+                south_out(i) = bounds_in(i)
+                north_out(i) = bounds_in(i + 1)
+            end do
+        else
+            do i = 1, nlat_in
+                south_out(i) = -90.0d0 + dble(i - 1) * (180.0d0 / dble(nlat_in))
+                north_out(i) = -90.0d0 + dble(i) * (180.0d0 / dble(nlat_in))
+            end do
+        end if
+    end subroutine resolve_lat_band_boundaries
 
     subroutine resolve_lat_band_indices(lat, lat_south, lat_north, lat_start, lat_end)
         real(8), intent(in) :: lat(:)
@@ -512,10 +562,6 @@ contains
             error stop 'write_thresholds_ascii_2d: percentile/threshold size mismatch'
         end if
 
-        if (size(thresholds_in, 1) /= nlat_bands) then
-            error stop 'write_thresholds_ascii_2d: lat band size mismatch'
-        end if
-
         open(newunit=unit_out, file=trim(path_out), status='replace', action='write', iostat=ios_out, iomsg=msg)
         if (ios_out /= 0) then
             write(error_unit,*) 'Failed to open output file, iomsg='//trim(msg)
@@ -531,7 +577,7 @@ contains
         write(unit_out, '(A)') ''
 
         ! Data rows: one per latitude band
-        do i = 1, nlat_bands
+        do i = 1, size(thresholds_in, 1)
             write(unit_out, '(I3)', advance='no') i
             do j = 1, size(percentiles)
                 write(unit_out, '(1X,ES16.8)', advance='no') thresholds_in(i, j)

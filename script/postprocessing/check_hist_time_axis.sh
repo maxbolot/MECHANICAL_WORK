@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Check for time-axis drift in per-date histogram files.
 #
-# For each canonical file named hist_YYYYMMDDHH.nc:
+# For each matching file with an embedded YYYYMMDDHH label:
 #   1) parse the filename start timestamp,
 #   2) read the actual first timestamp from the NetCDF time axis,
 #   3) if the drift from filename start exceeds MAX_DIFF_DAYS, report DRIFT
@@ -11,6 +11,33 @@ set -euo pipefail
 #      REMOVE_SOURCE_FILES=1.
 #
 # The script never modifies source files unless REMOVE_SOURCE_FILES=1.
+#
+# Filename matching controls:
+#   - FILE_PREFIX: simple prefix used by default matching.
+#   - FILE_GLOB: shell glob used to collect candidate files.
+#   - FILE_DATE_REGEX: bash regex used to validate names and extract the
+#     YYYYMMDDHH timestamp from capture group 1.
+#
+# Defaults are selected from SIMULATION:
+#   control, warming                     -> hist_YYYYMMDDHH.nc
+#   control_monthly_by_lat_band,
+#   warming_monthly_by_lat_band          -> hist_monthly_by_lat_band_YYYYMMDDHH.nc
+#
+# Example (monthly-by-lat-band defaults):
+#   DRY_RUN=1 SIMULATION=control_monthly_by_lat_band ./check_hist_time_axis.sh
+#
+# Example (custom naming):
+#   FILE_GLOB='myhist_*.nc' \
+#   FILE_DATE_REGEX='^myhist_([0-9]{10})_v2\.nc$' \
+#   ./check_hist_time_axis.sh
+#
+# Path resolution (run-aware):
+#   1) If SRC_DIR is set, it is used directly.
+#   2) Else if RUN_ID is set, source defaults to SRC_DIR_BASE/RUN_ID.
+#   3) Else if legacy flat files exist in SRC_DIR_BASE, legacy layout is used.
+#   4) Else the latest run subdirectory under SRC_DIR_BASE is used.
+#
+# Filename selection still follows FILE_PREFIX/FILE_GLOB/FILE_DATE_REGEX.
 
 # Ensure module command is available in non-interactive shells, then load tools.
 if ! type module >/dev/null 2>&1; then
@@ -36,21 +63,57 @@ SIMULATION="${SIMULATION:-control}"
 case "$SIMULATION" in
   control)
     default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms"
+    default_file_prefix="hist_"
     ;;
   warming)
     default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_PLUS_4K_CO2_1270ppmv"
+    default_file_prefix="hist_"
+    ;;
+  control_monthly_by_lat_band)
+    default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_monthly_by_lat_band"
+    default_file_prefix="hist_monthly_by_lat_band_"
+    ;;
+  warming_monthly_by_lat_band)
+    default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_monthly_by_lat_band_PLUS_4K_CO2_1270ppmv"
+    default_file_prefix="hist_monthly_by_lat_band_"
     ;;
   *)
     echo "Error: unsupported SIMULATION='$SIMULATION'." >&2
-    echo "Use one of: control, warming" >&2
+    echo "Use one of: control, warming, control_monthly_by_lat_band, warming_monthly_by_lat_band" >&2
     exit 1
     ;;
 esac
 
-file_prefix="hist_"
-
 # SRC_DIR can still be explicitly overridden for ad-hoc runs.
-SRC_DIR="${SRC_DIR:-$default_src_dir}"
+RUN_ID="${RUN_ID:-}"
+SRC_DIR_BASE="${SRC_DIR_BASE:-$default_src_dir}"
+if [[ -z "${SRC_DIR:-}" ]]; then
+  if [[ -n "$RUN_ID" ]]; then
+    SRC_DIR="$SRC_DIR_BASE/$RUN_ID"
+  elif compgen -G "$SRC_DIR_BASE/${default_file_prefix}*.nc" > /dev/null; then
+    # Backward compatibility for legacy flat output layout.
+    SRC_DIR="$SRC_DIR_BASE"
+  else
+    latest_run="$(find "$SRC_DIR_BASE" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null | sort | tail -n1)"
+    if [[ -n "$latest_run" ]]; then
+      SRC_DIR="$SRC_DIR_BASE/$latest_run"
+      RUN_ID="$latest_run"
+    else
+      SRC_DIR="$SRC_DIR_BASE"
+    fi
+  fi
+else
+  SRC_DIR="$SRC_DIR"
+fi
+# Prefix used for default filename matching.
+FILE_PREFIX="${FILE_PREFIX:-$default_file_prefix}"
+# Glob and regex can be overridden for custom naming conventions.
+FILE_GLOB="${FILE_GLOB:-${FILE_PREFIX}*.nc}"
+# Keep default regex assignment outside ${var:-...} because unescaped '}' in
+# regex quantifiers (e.g., {10}) can terminate parameter expansion early.
+if [[ -z "${FILE_DATE_REGEX:-}" ]]; then
+  FILE_DATE_REGEX="^${FILE_PREFIX}([0-9]{10})\\.nc$"
+fi
 # Maximum tolerated drift between expected and observed first timestamp.
 MAX_DIFF_DAYS="${MAX_DIFF_DAYS:-5}"
 # DRY_RUN=1 prints planned deletions without removing files.
@@ -94,16 +157,32 @@ threshold_sec=$(awk -v d="$MAX_DIFF_DAYS" 'BEGIN{printf "%.0f", d*86400.0}')
 # Collect only canonical per-date histogram files.
 shopt -s nullglob
 inputs=()
-for f in "$SRC_DIR"/${file_prefix}[0-9]*.nc; do
+candidates=("$SRC_DIR"/$FILE_GLOB)
+for f in "${candidates[@]}"; do
   b="$(basename "$f")"
-  if [[ "$b" =~ ^${file_prefix}([0-9]{10})\.nc$ ]]; then
+  if [[ "$b" =~ $FILE_DATE_REGEX ]]; then
     inputs+=("$f")
   fi
 done
 shopt -u nullglob
 
 if [[ ${#inputs[@]} -eq 0 ]]; then
-  echo "Error: no files matching ${file_prefix}YYYYMMDDHH.nc found in $SRC_DIR" >&2
+  if [[ ${#candidates[@]} -eq 0 ]]; then
+    echo "Error: no files found for glob '$FILE_GLOB' in $SRC_DIR" >&2
+  else
+    echo "Error: FILE_GLOB matched ${#candidates[@]} files, but FILE_DATE_REGEX matched none." >&2
+    echo "  FILE_GLOB='$FILE_GLOB'" >&2
+    echo "  FILE_DATE_REGEX='$FILE_DATE_REGEX'" >&2
+    echo "  Example candidate basenames:" >&2
+    max_examples=${#candidates[@]}
+    if (( max_examples > 5 )); then
+      max_examples=5
+    fi
+    for ((i=0; i<max_examples; i++)); do
+      echo "    - $(basename "${candidates[$i]}")" >&2
+    done
+    echo "Hint: if FILE_DATE_REGEX was exported in your shell, unset it to use SIMULATION defaults." >&2
+  fi
   exit 1
 fi
 
@@ -121,14 +200,14 @@ for in_file in "${sorted_inputs[@]}"; do
   total=$((total + 1))
   base="$(basename "$in_file")"
 
-  if [[ ! "$base" =~ ^${file_prefix}([0-9]{10})\.nc$ ]]; then
+  if [[ ! "$base" =~ $FILE_DATE_REGEX ]]; then
     skipped=$((skipped + 1))
-    echo "SKIP   $base  (name does not match expected pattern)"
+    echo "SKIP   $base  (name does not match FILE_DATE_REGEX)"
     continue
   fi
 
   label="${BASH_REMATCH[1]}"
-  # Derive nominal file start time from the filename stamp: hist_YYYYMMDDHH.nc
+  # Derive nominal file start time from the embedded YYYYMMDDHH filename label.
   start_iso="${label:0:4}-${label:4:2}-${label:6:2} ${label:8:2}:00:00"
   start_epoch=$(date -u -d "$start_iso" +%s)
   start_iso_fmt=$(date -u -d "@$start_epoch" '+%Y-%m-%dT%H:%M:%S')

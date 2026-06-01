@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 
 # Serial runner (no Slurm) for lat-band thresholded async work/lift computation.
 
@@ -14,16 +15,16 @@ case "$SIMULATION" in
         SOURCE_ROOT_PART2=/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire/pp
         LIST_FILE_PART1=${LIST_FILE_PART1:-$PROJECT_ROOT/launcher/list/list_control_part1.txt}
         LIST_FILE_PART2=${LIST_FILE_PART2:-$PROJECT_ROOT/launcher/list/list_control_part2.txt}
-        TARGET_DIR_COMPUTE=${TARGET_DIR_COMPUTE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_prate_thresholded_by_lat_band}
-        THRESHOLD_FILE=${THRESHOLD_FILE:-$PROJECT_ROOT/output/thresholds/thresholds_control_by_lat_band.txt}
+        TARGET_DIR_COMPUTE_BASE=${TARGET_DIR_COMPUTE_BASE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_prate_thresholded_by_lat_band}
+        THRESHOLD_FILE=${THRESHOLD_FILE:-$PROJECT_ROOT/output/thresholds/$RUN_ID/thresholds_control_by_lat_band.txt}
         ;;
     warming)
         SOURCE_ROOT_PART1=/scratch/cimes/GLOBALFV3/stellar_run/processed/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp
         SOURCE_ROOT_PART2=/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp
         LIST_FILE_PART1=${LIST_FILE_PART1:-$PROJECT_ROOT/launcher/list/list_PLUS_4K_CO2_1270ppmv_part1.txt}
         LIST_FILE_PART2=${LIST_FILE_PART2:-$PROJECT_ROOT/launcher/list/list_PLUS_4K_CO2_1270ppmv_part2.txt}
-        TARGET_DIR_COMPUTE=${TARGET_DIR_COMPUTE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv_prate_thresholded_by_lat_band}
-        THRESHOLD_FILE=${THRESHOLD_FILE:-$PROJECT_ROOT/output/thresholds/thresholds_warming_by_lat_band.txt}
+        TARGET_DIR_COMPUTE_BASE=${TARGET_DIR_COMPUTE_BASE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv_prate_thresholded_by_lat_band}
+        THRESHOLD_FILE=${THRESHOLD_FILE:-$PROJECT_ROOT/output/thresholds/$RUN_ID/thresholds_warming_by_lat_band.txt}
         ;;
     *)
         echo "Error: unsupported SIMULATION='$SIMULATION'. Use 'control' or 'warming'." >&2
@@ -31,7 +32,11 @@ case "$SIMULATION" in
         ;;
 esac
 
-LOG_DIR=${LOG_DIR:-$PROJECT_ROOT/logs}
+TARGET_DIR_COMPUTE=${TARGET_DIR_COMPUTE:-$TARGET_DIR_COMPUTE_BASE/$RUN_ID}
+
+LOG_DIR=${LOG_DIR:-$PROJECT_ROOT/logs/slurm}
+MANIFEST_DIR=${MANIFEST_DIR:-$PROJECT_ROOT/logs/manifests}
+MANIFEST_TOOL=${MANIFEST_TOOL:-$PROJECT_ROOT/python/workflow_manifest.py}
 NAMELIST_DIR=$PROJECT_ROOT/output/namelists
 
 module purge || true
@@ -75,7 +80,38 @@ if [[ ! -x "$COMPUTE_BIN" ]]; then
     exit 1
 fi
 
-mkdir -p "$TARGET_DIR_COMPUTE" "$LOG_DIR" "$NAMELIST_DIR"
+mkdir -p "$TARGET_DIR_COMPUTE" "$LOG_DIR" "$MANIFEST_DIR" "$NAMELIST_DIR"
+
+manifest_path="$MANIFEST_DIR/work/manifest_work_${RUN_ID}.json"
+cat << EOF | python3 "$MANIFEST_TOOL" --output "$manifest_path" --workflow-type work --run-id "$RUN_ID" --project-root "$PROJECT_ROOT" --launcher "launcher/compute_work_async_prate_threshold_by_lat_band_noslurm.sh" --mode "noslurm" --root "$TARGET_DIR_COMPUTE_BASE"
+{
+    "simulation": "$SIMULATION",
+    "list_files": {
+        "part1": "$LIST_FILE_PART1",
+        "part2": "$LIST_FILE_PART2"
+    },
+    "source_roots": {
+        "part1": "$SOURCE_ROOT_PART1",
+        "part2": "$SOURCE_ROOT_PART2"
+    },
+    "resources": {
+        "omp_num_threads": "$OMP_NUM_THREADS"
+    },
+    "log_dir": "$LOG_DIR",
+    "output": {
+        "compute_base": "$TARGET_DIR_COMPUTE_BASE",
+        "compute_dir": "$TARGET_DIR_COMPUTE"
+    },
+    "thresholding_enabled": true,
+    "threshold_file": "$THRESHOLD_FILE",
+    "lat_banding": {
+        "enabled": true,
+        "nlat_bands": null,
+        "use_custom_bounds": false,
+        "custom_bounds": ""
+    }
+}
+EOF
 
 RUN_LOG="$LOG_DIR/compute_work_async_prate_threshold_by_lat_band_noslurm_$(date +%Y%m%d_%H%M%S).log"
 echo "[$(date +%F\ %T)] Starting serial run for simulation: $SIMULATION" | tee -a "$RUN_LOG"

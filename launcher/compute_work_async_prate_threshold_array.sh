@@ -14,7 +14,10 @@ SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 NTASKS=${NTASKS:-1}
 CPUS_PER_TASK=${CPUS_PER_TASK:-1}
 MEM_PER_CPU=${MEM_PER_CPU:-12G}
-LOG_DIR=${LOG_DIR:-$PROJECT_ROOT/logs}
+RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
+LOG_DIR=${LOG_DIR:-$PROJECT_ROOT/logs/slurm}
+MANIFEST_DIR=${MANIFEST_DIR:-$PROJECT_ROOT/logs/manifests}
+MANIFEST_TOOL=${MANIFEST_TOOL:-$PROJECT_ROOT/python/workflow_manifest.py}
 
 SIMULATION=${SIMULATION:-control}
 
@@ -24,16 +27,16 @@ case "$SIMULATION" in
         SOURCE_ROOT_PART2=/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire/pp
         LIST_FILE_PART1=${LIST_FILE_PART1:-$PROJECT_ROOT/launcher/list/list_control_part1.txt}
         LIST_FILE_PART2=${LIST_FILE_PART2:-$PROJECT_ROOT/launcher/list/list_control_part2.txt}
-        TARGET_DIR_COMPUTE=${TARGET_DIR_COMPUTE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_prate_thresholded}
-        THRESHOLD_FILE=${THRESHOLD_FILE:-$PROJECT_ROOT/output/thresholds/thresholds_control.txt}
+        TARGET_DIR_COMPUTE_BASE=${TARGET_DIR_COMPUTE_BASE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_prate_thresholded}
+        THRESHOLD_FILE=${THRESHOLD_FILE:-$PROJECT_ROOT/output/thresholds/$RUN_ID/thresholds_control.txt}
         ;;
     warming)
         SOURCE_ROOT_PART1=/scratch/cimes/GLOBALFV3/stellar_run/processed/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp
         SOURCE_ROOT_PART2=/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp
         LIST_FILE_PART1=${LIST_FILE_PART1:-$PROJECT_ROOT/launcher/list/list_PLUS_4K_CO2_1270ppmv_part1.txt}
         LIST_FILE_PART2=${LIST_FILE_PART2:-$PROJECT_ROOT/launcher/list/list_PLUS_4K_CO2_1270ppmv_part2.txt}
-        TARGET_DIR_COMPUTE=${TARGET_DIR_COMPUTE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv_prate_thresholded}
-        THRESHOLD_FILE=${THRESHOLD_FILE:-$PROJECT_ROOT/output/thresholds/thresholds_warming.txt}
+        TARGET_DIR_COMPUTE_BASE=${TARGET_DIR_COMPUTE_BASE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv_prate_thresholded}
+        THRESHOLD_FILE=${THRESHOLD_FILE:-$PROJECT_ROOT/output/thresholds/$RUN_ID/thresholds_warming.txt}
         ;;
     *)
         echo "Error: unsupported SIMULATION='$SIMULATION'. Use 'control' or 'warming'." >&2
@@ -41,8 +44,10 @@ case "$SIMULATION" in
         ;;
 esac
 
+TARGET_DIR_COMPUTE=${TARGET_DIR_COMPUTE:-$TARGET_DIR_COMPUTE_BASE/$RUN_ID}
+
 if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
-    mkdir -p "$LOG_DIR"
+    mkdir -p "$LOG_DIR" "$MANIFEST_DIR"
 
     if [[ ! -f "$LIST_FILE_PART1" ]]; then
         echo "Error: list file not found: $LIST_FILE_PART1" >&2
@@ -64,9 +69,43 @@ if [[ -z "${SLURM_ARRAY_TASK_ID:-}" ]]; then
 
     echo "Submitting thresholded async job array with $n_tasks tasks for simulation $SIMULATION"
     echo "Resources per array task: ntasks=$NTASKS, cpus-per-task=$CPUS_PER_TASK, mem-per-cpu=$MEM_PER_CPU"
+
+        manifest_path="$MANIFEST_DIR/work/manifest_work_${RUN_ID}.json"
+        cat << EOF | python3 "$MANIFEST_TOOL" --output "$manifest_path" --workflow-type work --run-id "$RUN_ID" --project-root "$PROJECT_ROOT" --launcher "launcher/compute_work_async_prate_threshold_array.sh" --mode "slurm_array" --root "$TARGET_DIR_COMPUTE_BASE"
+{
+    "simulation": "$SIMULATION",
+    "list_files": {
+        "part1": "$LIST_FILE_PART1",
+        "part2": "$LIST_FILE_PART2"
+    },
+    "source_roots": {
+        "part1": "$SOURCE_ROOT_PART1",
+        "part2": "$SOURCE_ROOT_PART2"
+    },
+    "resources": {
+        "ntasks": "$NTASKS",
+        "cpus_per_task": "$CPUS_PER_TASK",
+        "mem_per_cpu": "$MEM_PER_CPU"
+    },
+    "log_dir": "$LOG_DIR",
+    "output": {
+        "compute_base": "$TARGET_DIR_COMPUTE_BASE",
+        "compute_dir": "$TARGET_DIR_COMPUTE"
+    },
+    "thresholding_enabled": true,
+    "threshold_file": "$THRESHOLD_FILE",
+    "lat_banding": {
+        "enabled": false,
+        "nlat_bands": null,
+        "use_custom_bounds": false,
+        "custom_bounds": ""
+    }
+}
+EOF
+
     sbatch --array=1-"$n_tasks" --ntasks="$NTASKS" --cpus-per-task="$CPUS_PER_TASK" --mem-per-cpu="$MEM_PER_CPU" \
         --output="$LOG_DIR/compute_work_async_prate_threshold_%A_%a.out" --error="$LOG_DIR/compute_work_async_prate_threshold_%A_%a.err" \
-        --export=ALL,PROJECT_ROOT="$PROJECT_ROOT",SIMULATION="$SIMULATION",LIST_FILE_PART1="$LIST_FILE_PART1",LIST_FILE_PART2="$LIST_FILE_PART2",NTASKS="$NTASKS",CPUS_PER_TASK="$CPUS_PER_TASK",MEM_PER_CPU="$MEM_PER_CPU",LOG_DIR="$LOG_DIR",TARGET_DIR_COMPUTE="$TARGET_DIR_COMPUTE",THRESHOLD_FILE="$THRESHOLD_FILE" "$SCRIPT_PATH"
+                --export=ALL,PROJECT_ROOT="$PROJECT_ROOT",SIMULATION="$SIMULATION",LIST_FILE_PART1="$LIST_FILE_PART1",LIST_FILE_PART2="$LIST_FILE_PART2",NTASKS="$NTASKS",CPUS_PER_TASK="$CPUS_PER_TASK",MEM_PER_CPU="$MEM_PER_CPU",RUN_ID="$RUN_ID",LOG_DIR="$LOG_DIR",MANIFEST_DIR="$MANIFEST_DIR",MANIFEST_TOOL="$MANIFEST_TOOL",TARGET_DIR_COMPUTE="$TARGET_DIR_COMPUTE",THRESHOLD_FILE="$THRESHOLD_FILE" "$SCRIPT_PATH"
     exit $?
 fi
 
