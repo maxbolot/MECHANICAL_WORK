@@ -13,6 +13,7 @@ program compute_prate_thresholds_by_lat_band
     integer, parameter :: npercentiles = 11
     integer, parameter :: default_nlat_bands = 18
     integer, parameter :: max_lat_band_bounds = 181
+    integer, parameter :: max_segments_per_band = 8
 
     character(len=1024) :: filenml, msg
     character(len=1024) :: history_root_part1, history_root_part2
@@ -28,21 +29,28 @@ program compute_prate_thresholds_by_lat_band
     real(8), allocatable :: percentile_values(:)
     real(8), allocatable :: thresholds(:,:)
     real(8), allocatable :: lat_ref(:)
-    real(8), allocatable :: lat_band_south(:), lat_band_north(:)
-    integer, allocatable :: lat_band_start(:), lat_band_end(:)
+    real(8), allocatable :: lat_band_segment_south_resolved(:,:), lat_band_segment_north_resolved(:,:)
+    integer, allocatable :: lat_band_segment_count_resolved(:)
+    integer, allocatable :: lat_band_start(:,:), lat_band_end(:,:)
 
     logical :: have_grid
     logical :: use_custom_lat_band_bounds
+    logical :: use_custom_lat_band_segments
     integer :: ndates
     integer :: tmp_unit, ios
     integer :: lon_clip_start, lon_clip_end
     integer :: ilat
+    integer :: iseg
     integer :: nlat_bands
     integer :: lat_band_bounds_count
     real(8) :: lat_band_bounds(max_lat_band_bounds)
+    integer :: lat_band_segment_count(max_lat_band_bounds - 1)
+    real(8) :: lat_band_segment_south(max_segments_per_band, max_lat_band_bounds - 1)
+    real(8) :: lat_band_segment_north(max_segments_per_band, max_lat_band_bounds - 1)
 
     namelist /config/ history_root_part1, history_root_part2, date_list_file_part1, date_list_file_part2, output_file, &
-                      nlat_bands, lat_band_bounds_count, lat_band_bounds, use_custom_lat_band_bounds
+                      nlat_bands, lat_band_bounds_count, lat_band_bounds, use_custom_lat_band_bounds, &
+                      use_custom_lat_band_segments, lat_band_segment_count, lat_band_segment_south, lat_band_segment_north
 
     history_root_part1 = ''
     history_root_part2 = ''
@@ -52,7 +60,11 @@ program compute_prate_thresholds_by_lat_band
     nlat_bands = default_nlat_bands
     lat_band_bounds_count = 0
     use_custom_lat_band_bounds = .false.
+    use_custom_lat_band_segments = .false.
     lat_band_bounds = 1.0d99
+    lat_band_segment_count = 0
+    lat_band_segment_south = 1.0d99
+    lat_band_segment_north = 1.0d99
 
     call get_command_argument(1, filenml)
     if (len_trim(filenml) == 0) then
@@ -104,16 +116,42 @@ program compute_prate_thresholds_by_lat_band
         write(error_unit,*) 'nlat_bands exceeds supported maximum.'
         stop 1
     end if
-    if (use_custom_lat_band_bounds) then
+    if (use_custom_lat_band_bounds .and. use_custom_lat_band_segments) then
+        write(error_unit,*) 'Choose either use_custom_lat_band_bounds or use_custom_lat_band_segments, not both.'
+        stop 1
+    end if
+
+    if (use_custom_lat_band_segments) then
+        do ilat = 1, nlat_bands
+            if (lat_band_segment_count(ilat) <= 0 .or. lat_band_segment_count(ilat) > max_segments_per_band) then
+                write(error_unit,*) 'lat_band_segment_count out of range for band ', ilat
+                stop 1
+            end if
+            do iseg = 1, lat_band_segment_count(ilat)
+                if (lat_band_segment_south(iseg, ilat) >= lat_band_segment_north(iseg, ilat)) then
+                    write(error_unit,*) 'lat band segment has south >= north for band/segment ', ilat, iseg
+                    stop 1
+                end if
+                if (lat_band_segment_south(iseg, ilat) < -90.0d0 .or. lat_band_segment_north(iseg, ilat) > 90.0d0) then
+                    write(error_unit,*) 'lat band segment bounds must be inside [-90,90] for band/segment ', ilat, iseg
+                    stop 1
+                end if
+            end do
+        end do
+    else if (use_custom_lat_band_bounds) then
         if (lat_band_bounds_count /= nlat_bands + 1) then
             write(error_unit,*) 'lat_band_bounds_count must equal nlat_bands + 1 when custom bounds are enabled.'
             stop 1
         end if
     end if
 
-    allocate(lat_band_south(nlat_bands), lat_band_north(nlat_bands))
-    allocate(lat_band_start(nlat_bands), lat_band_end(nlat_bands))
-    call resolve_lat_band_boundaries(nlat_bands, lat_band_bounds_count, use_custom_lat_band_bounds, lat_band_bounds, lat_band_south, lat_band_north)
+    allocate(lat_band_segment_count_resolved(nlat_bands))
+    allocate(lat_band_segment_south_resolved(max_segments_per_band, nlat_bands))
+    allocate(lat_band_segment_north_resolved(max_segments_per_band, nlat_bands))
+    allocate(lat_band_start(max_segments_per_band, nlat_bands), lat_band_end(max_segments_per_band, nlat_bands))
+    call resolve_lat_band_segments(nlat_bands, lat_band_bounds_count, use_custom_lat_band_bounds, lat_band_bounds, &
+                                   use_custom_lat_band_segments, lat_band_segment_count, lat_band_segment_south, lat_band_segment_north, &
+                                   lat_band_segment_count_resolved, lat_band_segment_south_resolved, lat_band_segment_north_resolved)
 
     ! Allocate histogram for all latitude bands: (nbins, nlat_bands)
     allocate(hist_area_out(nbins, nlat_bands))
@@ -124,10 +162,10 @@ program compute_prate_thresholds_by_lat_band
     ! Pass 1: parse all precipitation files from part1 and part2 and accumulate area-weighted histogram per lat band.
     call process_history_list_pair(trim(adjustl(history_root_part1)), trim(adjustl(date_list_file_part1)), &
                                    bin_edges, hist_area_out, cell_area, lat_ref, have_grid, &
-                                   lon_clip_start, lon_clip_end, lat_band_south, lat_band_north, lat_band_start, lat_band_end)
+                                   lon_clip_start, lon_clip_end, lat_band_segment_count_resolved, lat_band_segment_south_resolved, lat_band_segment_north_resolved, lat_band_start, lat_band_end)
     call process_history_list_pair(trim(adjustl(history_root_part2)), trim(adjustl(date_list_file_part2)), &
                                    bin_edges, hist_area_out, cell_area, lat_ref, have_grid, &
-                                   lon_clip_start, lon_clip_end, lat_band_south, lat_band_north, lat_band_start, lat_band_end)
+                                   lon_clip_start, lon_clip_end, lat_band_segment_count_resolved, lat_band_segment_south_resolved, lat_band_segment_north_resolved, lat_band_start, lat_band_end)
 
     allocate(cdf_edges(nedges))
     allocate(percentile_values(npercentiles))
@@ -152,7 +190,7 @@ program compute_prate_thresholds_by_lat_band
 contains
 
     subroutine process_history_list_pair(root, list_file, edges, hist_accum, area_ref, lat_ref, have_grid_ref, &
-                                         lon_clip_start_ref, lon_clip_end_ref, lat_south_ref, lat_north_ref, lat_start_ref, lat_end_ref)
+                                         lon_clip_start_ref, lon_clip_end_ref, lat_seg_count_ref, lat_seg_south_ref, lat_seg_north_ref, lat_start_ref, lat_end_ref)
         character(len=*), intent(in) :: root, list_file
         real(8), intent(in) :: edges(:)
         real(8), intent(inout) :: hist_accum(:,:)
@@ -160,8 +198,9 @@ contains
         real(8), allocatable, intent(inout) :: lat_ref(:)
         logical, intent(inout) :: have_grid_ref
         integer, intent(inout) :: lon_clip_start_ref, lon_clip_end_ref
-        real(8), intent(in) :: lat_south_ref(:), lat_north_ref(:)
-        integer, intent(inout) :: lat_start_ref(:), lat_end_ref(:)
+        integer, intent(in) :: lat_seg_count_ref(:)
+        real(8), intent(in) :: lat_seg_south_ref(:,:), lat_seg_north_ref(:,:)
+        integer, intent(inout) :: lat_start_ref(:,:), lat_end_ref(:,:)
 
         integer :: i
 
@@ -174,7 +213,7 @@ contains
         do i = 1, ndates
             call build_prate_path(trim(adjustl(root)), trim(adjustl(dates(i))), input_path)
             call accumulate_hist_from_file_by_lat_band(trim(adjustl(input_path)), edges, hist_accum, area_ref, lat_ref, have_grid_ref, &
-                                           lon_clip_start_ref, lon_clip_end_ref, lat_south_ref, lat_north_ref, lat_start_ref, lat_end_ref)
+                                           lon_clip_start_ref, lon_clip_end_ref, lat_seg_count_ref, lat_seg_south_ref, lat_seg_north_ref, lat_start_ref, lat_end_ref)
         end do
 
         if (allocated(dates)) deallocate(dates)
@@ -270,7 +309,7 @@ contains
     end subroutine init_piecewise_log_bins
 
     subroutine accumulate_hist_from_file_by_lat_band(path_in, edges, hist_accum, area_ref, lat_ref, have_grid_ref, &
-                                         lon_clip_start_ref, lon_clip_end_ref, lat_south_ref, lat_north_ref, lat_start_ref, lat_end_ref)
+                                         lon_clip_start_ref, lon_clip_end_ref, lat_seg_count_ref, lat_seg_south_ref, lat_seg_north_ref, lat_start_ref, lat_end_ref)
         character(len=*), intent(in) :: path_in
         real(8), intent(in) :: edges(:)
         real(8), intent(inout) :: hist_accum(:,:)
@@ -278,8 +317,9 @@ contains
         real(8), allocatable, intent(inout) :: lat_ref(:)
         logical, intent(inout) :: have_grid_ref
         integer, intent(inout) :: lon_clip_start_ref, lon_clip_end_ref
-        real(8), intent(in) :: lat_south_ref(:), lat_north_ref(:)
-        integer, intent(inout) :: lat_start_ref(:), lat_end_ref(:)
+        integer, intent(in) :: lat_seg_count_ref(:)
+        real(8), intent(in) :: lat_seg_south_ref(:,:), lat_seg_north_ref(:,:)
+        integer, intent(inout) :: lat_start_ref(:,:), lat_end_ref(:,:)
 
         integer :: ncid_in, varid_pr
         integer :: varid_lon, varid_lat
@@ -287,7 +327,7 @@ contains
         integer :: dimids(nf90_max_var_dims)
         integer :: nx, ny, n3, n4
         integer :: dlen
-        integer :: k3, k4, ilat
+        integer :: k3, k4, ilat, iseg
 
         real(8), allocatable :: lon(:), lat(:)
         real(8), allocatable :: pr3d(:,:,:)
@@ -330,8 +370,10 @@ contains
             lon_clip_end_ref = nx
             allocate(lat_ref(ny))
             lat_ref = lat
-            do ilat = 1, size(lat_start_ref)
-                call resolve_lat_band_indices(lat_ref, lat_south_ref(ilat), lat_north_ref(ilat), lat_start_ref(ilat), lat_end_ref(ilat))
+            do ilat = 1, size(lat_seg_count_ref)
+                do iseg = 1, lat_seg_count_ref(ilat)
+                    call resolve_lat_band_indices(lat_ref, lat_seg_south_ref(iseg, ilat), lat_seg_north_ref(iseg, ilat), lat_start_ref(iseg, ilat), lat_end_ref(iseg, ilat))
+                end do
             end do
             deallocate(lon, lat)
             have_grid_ref = .true.
@@ -357,32 +399,30 @@ contains
         allocate(pr3d(nx, ny, 1))
 
         ! Process each latitude band separately
-        do ilat = 1, size(lat_start_ref)
-            lat_start_band = lat_start_ref(ilat)
-            lat_end_band = lat_end_ref(ilat)
+        do ilat = 1, size(lat_seg_count_ref)
+            ! Accumulate all segments that belong to this latitude band.
+            do iseg = 1, lat_seg_count_ref(ilat)
+                lat_start_band = lat_start_ref(iseg, ilat)
+                lat_end_band = lat_end_ref(iseg, ilat)
+                if (lat_start_band > lat_end_band) cycle
 
-            if (lat_start_band > lat_end_band) then
-                cycle  ! No data in this band
-            end if
+                do k4 = 1, n4
+                    do k3 = 1, n3
+                        select case (ndims)
+                        case (2)
+                            call check(nf90_get_var(ncid_in, varid_pr, pr3d(:,:,1), start=(/1,1/), count=(/nx,ny/)))
+                        case (3)
+                            call check(nf90_get_var(ncid_in, varid_pr, pr3d(:,:,1), start=(/1,1,k3/), count=(/nx,ny,1/)))
+                        case (4)
+                            call check(nf90_get_var(ncid_in, varid_pr, pr3d(:,:,1), start=(/1,1,k3,k4/), count=(/nx,ny,1,1/)))
+                        end select
 
-            ! Accumulate histogram for this latitude band only
-            do k4 = 1, n4
-                do k3 = 1, n3
-                    select case (ndims)
-                    case (2)
-                        call check(nf90_get_var(ncid_in, varid_pr, pr3d(:,:,1), start=(/1,1/), count=(/nx,ny/)))
-                    case (3)
-                        call check(nf90_get_var(ncid_in, varid_pr, pr3d(:,:,1), start=(/1,1,k3/), count=(/nx,ny,1/)))
-                    case (4)
-                        call check(nf90_get_var(ncid_in, varid_pr, pr3d(:,:,1), start=(/1,1,k3,k4/), count=(/nx,ny,1,1/)))
-                    end select
-
-                    ! Accumulate histogram only inside this latitude band.
-                    call bin_sumarea(pr3d(lon_clip_start_ref:lon_clip_end_ref, lat_start_band:lat_end_band, :), &
-                                     area_ref(lon_clip_start_ref:lon_clip_end_ref, lat_start_band:lat_end_band), &
-                                     edges, hist_area_chunk)
-                    hist_accum(:, ilat) = hist_accum(:, ilat) + hist_area_chunk
-                    if (allocated(hist_area_chunk)) deallocate(hist_area_chunk)
+                        call bin_sumarea(pr3d(lon_clip_start_ref:lon_clip_end_ref, lat_start_band:lat_end_band, :), &
+                                         area_ref(lon_clip_start_ref:lon_clip_end_ref, lat_start_band:lat_end_band), &
+                                         edges, hist_area_chunk)
+                        hist_accum(:, ilat) = hist_accum(:, ilat) + hist_area_chunk
+                        if (allocated(hist_area_chunk)) deallocate(hist_area_chunk)
+                    end do
                 end do
             end do
         end do
@@ -396,6 +436,36 @@ contains
             write(*,*) 'Processed file: ', trim(path_in)
         end if
     end subroutine accumulate_hist_from_file_by_lat_band
+
+    subroutine resolve_lat_band_segments(nlat_in, count_in, custom_bounds_in, bounds_in, custom_segments_in, seg_count_cfg_in, seg_south_cfg_in, seg_north_cfg_in, seg_count_out, seg_south_out, seg_north_out)
+        integer, intent(in) :: nlat_in, count_in
+        logical, intent(in) :: custom_bounds_in, custom_segments_in
+        real(8), intent(in) :: bounds_in(:)
+        integer, intent(in) :: seg_count_cfg_in(:)
+        real(8), intent(in) :: seg_south_cfg_in(:,:), seg_north_cfg_in(:,:)
+        integer, intent(out) :: seg_count_out(:)
+        real(8), intent(out) :: seg_south_out(:,:), seg_north_out(:,:)
+        integer :: i, s
+
+        seg_count_out = 0
+        seg_south_out = 1.0d99
+        seg_north_out = 1.0d99
+
+        if (custom_segments_in) then
+            do i = 1, nlat_in
+                seg_count_out(i) = seg_count_cfg_in(i)
+                do s = 1, seg_count_out(i)
+                    seg_south_out(s, i) = seg_south_cfg_in(s, i)
+                    seg_north_out(s, i) = seg_north_cfg_in(s, i)
+                end do
+            end do
+        else
+            call resolve_lat_band_boundaries(nlat_in, count_in, custom_bounds_in, bounds_in, seg_south_out(1,1:nlat_in), seg_north_out(1,1:nlat_in))
+            do i = 1, nlat_in
+                seg_count_out(i) = 1
+            end do
+        end if
+    end subroutine resolve_lat_band_segments
 
     subroutine resolve_lat_band_boundaries(nlat_in, count_in, custom_in, bounds_in, south_out, north_out)
         integer, intent(in) :: nlat_in, count_in

@@ -45,24 +45,28 @@ case "$SIMULATION" in
     default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms"
     default_file_prefix="hist_"
     default_output_prefix="hist"
+    default_date_digits=10
     ;;
   warming)
     default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_PLUS_4K_CO2_1270ppmv"
     default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_PLUS_4K_CO2_1270ppmv"
     default_file_prefix="hist_"
     default_output_prefix="hist"
+    default_date_digits=10
     ;;
   control_monthly_by_lat_band)
     default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_monthly_by_lat_band"
     default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_monthly_by_lat_band"
     default_file_prefix="hist_monthly_by_lat_band_"
     default_output_prefix="hist_monthly_by_lat_band"
+    default_date_digits=6
     ;;
   warming_monthly_by_lat_band)
     default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_monthly_by_lat_band_PLUS_4K_CO2_1270ppmv"
     default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_monthly_by_lat_band_PLUS_4K_CO2_1270ppmv"
     default_file_prefix="hist_monthly_by_lat_band_"
     default_output_prefix="hist_monthly_by_lat_band"
+    default_date_digits=6
     ;;
   *)
     echo "Error: unsupported SIMULATION='$SIMULATION'. Use 'control', 'warming', 'control_monthly_by_lat_band', or 'warming_monthly_by_lat_band'." >&2
@@ -100,7 +104,7 @@ FILE_GLOB="${FILE_GLOB:-${FILE_PREFIX}*.nc}"
 # Keep default regex assignment outside ${var:-...} because unescaped '}' in
 # regex quantifiers (e.g., {10}) can terminate parameter expansion early.
 if [[ -z "${FILE_DATE_REGEX:-}" ]]; then
-  FILE_DATE_REGEX="^${FILE_PREFIX}([0-9]{10})\\.nc$"
+  FILE_DATE_REGEX="^${FILE_PREFIX}([0-9]{${default_date_digits}})\\.nc$"
 fi
 
 # Destination folder for concatenated output.

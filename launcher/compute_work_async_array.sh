@@ -17,7 +17,13 @@ SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 NTASKS=${NTASKS:-1}
 CPUS_PER_TASK=${CPUS_PER_TASK:-1}
 MEM_PER_CPU=${MEM_PER_CPU:-5G}
-RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
+RUN_ID_ROOT=${RUN_ID_ROOT:-""}
+RUN_ID_TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
+if [[ -n "$RUN_ID_ROOT" ]]; then
+    RUN_ID="$RUN_ID_ROOT"_"$RUN_ID_TIMESTAMP"
+else
+    RUN_ID="$RUN_ID_TIMESTAMP"
+fi
 LOG_DIR=${LOG_DIR:-$PROJECT_ROOT/logs/slurm}
 MANIFEST_DIR=${MANIFEST_DIR:-$PROJECT_ROOT/logs/manifests}
 MANIFEST_TOOL=${MANIFEST_TOOL:-$PROJECT_ROOT/python/workflow_manifest.py}

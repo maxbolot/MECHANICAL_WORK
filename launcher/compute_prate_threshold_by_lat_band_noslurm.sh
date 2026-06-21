@@ -3,10 +3,23 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
-RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
+RUN_ID=${RUN_ID:-""}
+RUN_ID_ROOT=${RUN_ID_ROOT:-""}
+RUN_ID_TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
+if [[ -n "$RUN_ID" ]]; then
+    :
+elif [[ -n "$RUN_ID_ROOT" ]]; then
+    RUN_ID="$RUN_ID_ROOT"_"$RUN_ID_TIMESTAMP"
+else
+    RUN_ID="$RUN_ID_TIMESTAMP"
+fi
 NLAT_BANDS=${NLAT_BANDS:-18}
 USE_CUSTOM_LAT_BAND_BOUNDS=${USE_CUSTOM_LAT_BAND_BOUNDS:-false}
 LAT_BAND_BOUNDS=${LAT_BAND_BOUNDS:-}
+USE_CUSTOM_LAT_BAND_SEGMENTS=${USE_CUSTOM_LAT_BAND_SEGMENTS:-false}
+# Segment spec format: "south:north[,south:north...];south:north[...]" (one ';'-separated band spec per band).
+# Example for 2 bands: "-60:-30,30:60;-30:30"
+LAT_BAND_SEGMENTS=${LAT_BAND_SEGMENTS:-}
 
 # Serial launcher (no Slurm) for compute_prate_thresholds_by_lat_band.
 # The Fortran program reads two history roots and two date lists.
@@ -38,6 +51,16 @@ case "$SIMULATION" in
         exit 1
         ;;
 esac
+
+if [[ "$USE_CUSTOM_LAT_BAND_BOUNDS" == "true" && "$USE_CUSTOM_LAT_BAND_SEGMENTS" == "true" ]]; then
+    echo "Error: only one of USE_CUSTOM_LAT_BAND_BOUNDS or USE_CUSTOM_LAT_BAND_SEGMENTS may be true." >&2
+    exit 1
+fi
+
+if [[ "$USE_CUSTOM_LAT_BAND_SEGMENTS" == "true" && -z "$LAT_BAND_SEGMENTS" ]]; then
+    echo "Error: LAT_BAND_SEGMENTS is required when USE_CUSTOM_LAT_BAND_SEGMENTS=true." >&2
+    exit 1
+fi
 
 OUTPUT_DIR_BASE=${OUTPUT_DIR_BASE:-$PROJECT_ROOT/output/thresholds}
 OUTPUT_FILE=${OUTPUT_FILE:-$OUTPUT_DIR_BASE/$RUN_ID/$OUTPUT_FILE_BASENAME}
@@ -75,7 +98,9 @@ cat << EOF | python3 "$MANIFEST_TOOL" --output "$manifest_path" --workflow-type 
         "enabled": true,
         "nlat_bands": "$NLAT_BANDS",
         "use_custom_bounds": $([[ "$USE_CUSTOM_LAT_BAND_BOUNDS" == "true" ]] && echo true || echo false),
-        "custom_bounds": "$LAT_BAND_BOUNDS"
+        "custom_bounds": "$LAT_BAND_BOUNDS",
+        "use_custom_segments": $([[ "$USE_CUSTOM_LAT_BAND_SEGMENTS" == "true" ]] && echo true || echo false),
+        "custom_segments": "$LAT_BAND_SEGMENTS"
     }
 }
 EOF
@@ -118,6 +143,67 @@ fi
 CONFIG_FILE="$NAMELIST_DIR/config_prate_threshold_by_lat_band_$$.nml"
 RUN_LOG="$LOG_DIR/compute_prate_threshold_by_lat_band_noslurm_$(date +%Y%m%d_%H%M%S).log"
 
+emit_lat_banding_namelist() {
+    if [[ "$USE_CUSTOM_LAT_BAND_BOUNDS" == "true" ]]; then
+        IFS=',' read -r -a bounds <<< "$LAT_BAND_BOUNDS"
+        echo "    use_custom_lat_band_bounds = .true.,"
+        echo "    use_custom_lat_band_segments = .false.,"
+        echo "    lat_band_bounds_count = ${#bounds[@]},"
+        printf '    lat_band_bounds = '
+        for ((i=0; i<${#bounds[@]}; i++)); do
+            if [[ $i -gt 0 ]]; then
+                printf ', '
+            fi
+            printf '%s' "${bounds[$i]}"
+        done
+        printf ',\n'
+        return
+    fi
+
+    if [[ "$USE_CUSTOM_LAT_BAND_SEGMENTS" == "true" ]]; then
+        IFS=';' read -r -a band_specs <<< "$LAT_BAND_SEGMENTS"
+        if [[ ${#band_specs[@]} -ne $NLAT_BANDS ]]; then
+            echo "Error: LAT_BAND_SEGMENTS must provide exactly $NLAT_BANDS ';'-separated band specs." >&2
+            exit 1
+        fi
+
+        echo "    use_custom_lat_band_bounds = .false.,"
+        echo "    lat_band_bounds_count = 0,"
+        echo "    use_custom_lat_band_segments = .true.,"
+
+        for ((iband=0; iband<${#band_specs[@]}; iband++)); do
+            band_clean=$(echo "${band_specs[$iband]}" | tr -d '[:space:]')
+            if [[ -z "$band_clean" ]]; then
+                echo "Error: empty segment spec for band $((iband + 1))." >&2
+                exit 1
+            fi
+            IFS=',' read -r -a segments <<< "$band_clean"
+            echo "    lat_band_segment_count($((iband + 1))) = ${#segments[@]},"
+
+            for ((iseg=0; iseg<${#segments[@]}; iseg++)); do
+                seg="${segments[$iseg]}"
+                if [[ "$seg" != *:* ]]; then
+                    echo "Error: invalid segment '$seg' in band $((iband + 1)); expected south:north." >&2
+                    exit 1
+                fi
+                south=${seg%%:*}
+                north=${seg##*:}
+                if [[ -z "$south" || -z "$north" ]]; then
+                    echo "Error: invalid segment '$seg' in band $((iband + 1)); south/north must be non-empty." >&2
+                    exit 1
+                fi
+                echo "    lat_band_segment_south($((iseg + 1)),$((iband + 1))) = $south,"
+                echo "    lat_band_segment_north($((iseg + 1)),$((iband + 1))) = $north,"
+            done
+        done
+        return
+    fi
+
+    echo "    use_custom_lat_band_bounds = .false.,"
+    echo "    use_custom_lat_band_segments = .false.,"
+    echo "    lat_band_bounds_count = 0,"
+}
+
 cat > "$CONFIG_FILE" << EOF
 &config
     history_root_part1   = '$SOURCE_ROOT_PART1',
@@ -128,26 +214,7 @@ cat > "$CONFIG_FILE" << EOF
     nlat_bands           = $NLAT_BANDS,
 EOF
 
-if [[ "$USE_CUSTOM_LAT_BAND_BOUNDS" == "true" ]]; then
-    IFS=',' read -r -a bounds <<< "$LAT_BAND_BOUNDS"
-    {
-        echo "    use_custom_lat_band_bounds = .true.,"
-        echo "    lat_band_bounds_count = ${#bounds[@]},"
-        printf '    lat_band_bounds = '
-        for ((i=0; i<${#bounds[@]}; i++)); do
-            if [[ $i -gt 0 ]]; then
-                printf ', '
-            fi
-            printf '%s' "${bounds[$i]}"
-        done
-        printf ',\n'
-    } >> "$CONFIG_FILE"
-else
-    {
-        echo "    use_custom_lat_band_bounds = .false.,"
-        echo "    lat_band_bounds_count = 0,"
-    } >> "$CONFIG_FILE"
-fi
+emit_lat_banding_namelist >> "$CONFIG_FILE"
 
 cat >> "$CONFIG_FILE" << EOF
 /

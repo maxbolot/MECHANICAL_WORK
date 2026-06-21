@@ -3,7 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
-RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
+RUN_ID_ROOT=${RUN_ID_ROOT:-""}
+RUN_ID_TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
+if [[ -n "$RUN_ID_ROOT" ]]; then
+    RUN_ID="$RUN_ID_ROOT"_"$RUN_ID_TIMESTAMP"
+else
+    RUN_ID="$RUN_ID_TIMESTAMP"
+fi
 
 # Serial launcher (no Slurm) for compute_prate_thresholds.
 # The Fortran program reads two history roots and two date lists.

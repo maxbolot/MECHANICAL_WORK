@@ -3,7 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
-RUN_ID=${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
+RUN_ID_ROOT=${RUN_ID_ROOT:-""}
+RUN_ID_TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
+if [[ -n "$RUN_ID_ROOT" ]]; then
+    RUN_ID="$RUN_ID_ROOT"_"$RUN_ID_TIMESTAMP"
+else
+    RUN_ID="$RUN_ID_TIMESTAMP"
+fi
 
 SIMULATION=${SIMULATION:-control_monthly_by_lat_band}
 
@@ -37,8 +43,22 @@ USE_CUSTOM_LAT_BAND_BOUNDS=${USE_CUSTOM_LAT_BAND_BOUNDS:-false}
 # Comma-separated numeric boundaries, only used when USE_CUSTOM_LAT_BAND_BOUNDS=true
 # Example: LAT_BAND_BOUNDS="-90,-60,-30,0,30,60,90"
 LAT_BAND_BOUNDS=${LAT_BAND_BOUNDS:-}
+USE_CUSTOM_LAT_BAND_SEGMENTS=${USE_CUSTOM_LAT_BAND_SEGMENTS:-false}
+# Segment spec format: "south:north[,south:north...];south:north[...]" (one ';'-separated band spec per band).
+# Example for 2 bands: "-60:-30,30:60;-30:30"
+LAT_BAND_SEGMENTS=${LAT_BAND_SEGMENTS:-}
 AGGREGATION_MODE=${AGGREGATION_MODE:-monthly}
 GROUP_BY_PERIOD=${GROUP_BY_PERIOD:-0}
+
+if [[ "$USE_CUSTOM_LAT_BAND_BOUNDS" == "true" && "$USE_CUSTOM_LAT_BAND_SEGMENTS" == "true" ]]; then
+    echo "Error: only one of USE_CUSTOM_LAT_BAND_BOUNDS or USE_CUSTOM_LAT_BAND_SEGMENTS may be true." >&2
+    exit 1
+fi
+
+if [[ "$USE_CUSTOM_LAT_BAND_SEGMENTS" == "true" && -z "$LAT_BAND_SEGMENTS" ]]; then
+    echo "Error: LAT_BAND_SEGMENTS is required when USE_CUSTOM_LAT_BAND_SEGMENTS=true." >&2
+    exit 1
+fi
 
 case "$AGGREGATION_MODE" in
     monthly)
@@ -68,8 +88,72 @@ period_key_from_date() {
     esac
 }
 
+emit_lat_banding_namelist() {
+    if [[ "$USE_CUSTOM_LAT_BAND_BOUNDS" == "true" ]]; then
+        IFS=',' read -r -a bounds <<< "$LAT_BAND_BOUNDS"
+        echo "    use_custom_lat_band_bounds = .true.,"
+        echo "    use_custom_lat_band_segments = .false.,"
+        echo "    lat_band_bounds_count = ${#bounds[@]},"
+        printf '    lat_band_bounds = '
+        for ((i=0; i<${#bounds[@]}; i++)); do
+            if [[ $i -gt 0 ]]; then
+                printf ', '
+            fi
+            printf '%s' "${bounds[$i]}"
+        done
+        printf ',\n'
+        return
+    fi
+
+    if [[ "$USE_CUSTOM_LAT_BAND_SEGMENTS" == "true" ]]; then
+        IFS=';' read -r -a band_specs <<< "$LAT_BAND_SEGMENTS"
+        if [[ ${#band_specs[@]} -ne $NLAT_BANDS ]]; then
+            echo "Error: LAT_BAND_SEGMENTS must provide exactly $NLAT_BANDS ';'-separated band specs." >&2
+            exit 1
+        fi
+
+        echo "    use_custom_lat_band_bounds = .false.,"
+        echo "    lat_band_bounds_count = 0,"
+        echo "    use_custom_lat_band_segments = .true.,"
+
+        for ((iband=0; iband<${#band_specs[@]}; iband++)); do
+            band_clean=$(echo "${band_specs[$iband]}" | tr -d '[:space:]')
+            if [[ -z "$band_clean" ]]; then
+                echo "Error: empty segment spec for band $((iband + 1))." >&2
+                exit 1
+            fi
+            IFS=',' read -r -a segments <<< "$band_clean"
+            echo "    lat_band_segment_count($((iband + 1))) = ${#segments[@]},"
+
+            for ((iseg=0; iseg<${#segments[@]}; iseg++)); do
+                seg="${segments[$iseg]}"
+                if [[ "$seg" != *:* ]]; then
+                    echo "Error: invalid segment '$seg' in band $((iband + 1)); expected south:north." >&2
+                    exit 1
+                fi
+                south=${seg%%:*}
+                north=${seg##*:}
+                if [[ -z "$south" || -z "$north" ]]; then
+                    echo "Error: invalid segment '$seg' in band $((iband + 1)); south/north must be non-empty." >&2
+                    exit 1
+                fi
+                echo "    lat_band_segment_south($((iseg + 1)),$((iband + 1))) = $south,"
+                echo "    lat_band_segment_north($((iseg + 1)),$((iband + 1))) = $north,"
+            done
+        done
+        return
+    fi
+
+    echo "    use_custom_lat_band_bounds = .false.,"
+    echo "    use_custom_lat_band_segments = .false.,"
+    echo "    lat_band_bounds_count = 0,"
+}
+
 module purge || true
 module load intel-oneapi/2024.2 hdf5/oneapi-2024.2/1.14.4 netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2
+
+# Allow override; default disables file locking to avoid GPFS/Lustre HDF5 write failures.
+export HDF5_USE_FILE_LOCKING="${HDF5_USE_FILE_LOCKING:-FALSE}"
 
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-3}
 
@@ -132,7 +216,9 @@ cat << EOF | python3 "$MANIFEST_TOOL" --output "$manifest_path" --workflow-type 
         "enabled": true,
         "nlat_bands": "$NLAT_BANDS",
         "use_custom_bounds": $([[ "$USE_CUSTOM_LAT_BAND_BOUNDS" == "true" ]] && echo true || echo false),
-        "custom_bounds": "$LAT_BAND_BOUNDS"
+        "custom_bounds": "$LAT_BAND_BOUNDS",
+        "use_custom_segments": $([[ "$USE_CUSTOM_LAT_BAND_SEGMENTS" == "true" ]] && echo true || echo false),
+        "custom_segments": "$LAT_BAND_SEGMENTS"
     }
 }
 EOF
@@ -172,22 +258,7 @@ make_namelist() {
     aggregation_mode = '$AGGREGATION_MODE',
 EOF
 
-        if [[ "$USE_CUSTOM_LAT_BAND_BOUNDS" == "true" ]]; then
-            IFS=',' read -r -a bounds <<< "$LAT_BAND_BOUNDS"
-            echo "    use_custom_lat_band_bounds = .true.,"
-            echo "    lat_band_bounds_count = ${#bounds[@]},"
-            printf '    lat_band_bounds = '
-            for ((i=0; i<${#bounds[@]}; i++)); do
-                if [[ $i -gt 0 ]]; then
-                    printf ', '
-                fi
-                printf '%s' "${bounds[$i]}"
-            done
-            printf ',\n'
-        else
-            echo "    use_custom_lat_band_bounds = .false.,"
-            echo "    lat_band_bounds_count = 0,"
-        fi
+        emit_lat_banding_namelist
 
         cat << EOF
 /
@@ -251,6 +322,8 @@ if [[ "$GROUP_BY_PERIOD" == "1" ]]; then
     : > "$period_keys_file"
 
     current_key=""
+    prev_date=""
+    prev_source_root=""
     while IFS='|' read -r date source_root; do
         period_key=$(period_key_from_date "$date")
         if [[ -z "$period_key" ]]; then
@@ -259,9 +332,16 @@ if [[ "$GROUP_BY_PERIOD" == "1" ]]; then
         fi
         if [[ "$period_key" != "$current_key" ]]; then
             echo "$period_key" >> "$period_keys_file"
+            # In monthly mode, include the previous source window in the new
+            # period list so straddling timesteps can be selected by target key.
+            if [[ "$AGGREGATION_MODE" == "monthly" && -n "$prev_date" ]]; then
+                echo "$prev_date|$prev_source_root" >> "$period_task_dir/${period_key}.lst"
+            fi
             current_key="$period_key"
         fi
         echo "$date|$source_root" >> "$period_task_dir/${period_key}.lst"
+        prev_date="$date"
+        prev_source_root="$source_root"
     done < "$sorted_file"
 
     while IFS= read -r period_key; do
@@ -309,22 +389,7 @@ if [[ "$GROUP_BY_PERIOD" == "1" ]]; then
     target_period_key = '$period_key',
 EOF
 
-            if [[ "$USE_CUSTOM_LAT_BAND_BOUNDS" == "true" ]]; then
-                IFS=',' read -r -a bounds <<< "$LAT_BAND_BOUNDS"
-                echo "    use_custom_lat_band_bounds = .true.,"
-                echo "    lat_band_bounds_count = ${#bounds[@]},"
-                printf '    lat_band_bounds = '
-                for ((i=0; i<${#bounds[@]}; i++)); do
-                    if [[ $i -gt 0 ]]; then
-                        printf ', '
-                    fi
-                    printf '%s' "${bounds[$i]}"
-                done
-                printf ',\n'
-            else
-                echo "    use_custom_lat_band_bounds = .false.,"
-                echo "    lat_band_bounds_count = 0,"
-            fi
+            emit_lat_banding_namelist
 
             cat << EOF
 /

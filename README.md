@@ -30,6 +30,7 @@ The project is organized as a pipeline:
   - `compute_work_async_noslurm.sh`: serial fallback runner using simulation-aware part1/part2 date lists.
   - `compute_work_async_test_noslurm.sh`: simple one-date test launcher with one hardcoded source root.
   - `compute_prate_threshold_noslurm.sh`: serial launcher for percentile threshold generation.
+  - `compute_prate_threshold_by_lat_band_noslurm.sh`: serial launcher for precipitation thresholds by configurable latitude bands.
   - `compute_work_async_prate_threshold_array.sh`: Slurm array launcher for thresholded async work/lift.
   - `compute_work_async_prate_threshold_noslurm.sh`: serial launcher for thresholded async work/lift.
   - `compute_work_async_histograms_by_lat_band_array.sh`: Slurm array launcher for monthly histogram-only outputs by latitude band.
@@ -248,16 +249,75 @@ Thresholded async work/lift launchers:
 
 Histogram-only monthly launchers:
 
-- Use `SIMULATION=${SIMULATION:-control}` to choose control or warming source trees.
+- Use `SIMULATION=${SIMULATION:-control_monthly_by_lat_band}` to choose control or warming source trees.
 - Read dates from paired `LIST_FILE_PART1` and `LIST_FILE_PART2` and map each date to the matching source root.
 - Run `compute_work_async_histograms_by_lat_band` and write one histogram NetCDF output per date.
-- Support configurable latitude bands via environment-driven namelist fields:
+- In one-pass period mode (`date_list_file` + `target_period_key`), the executable now computes the time-length per source file and loops over that source-local length.
+- This prevents NetCDF bound errors when different source dates have different numbers of timesteps.
+- In non-period mode, all sources are required to have the same timestep count; the executable aborts early with a clear message if a mismatch is detected.
+- Support configurable latitude bands via environment-driven namelist fields.
+- Exactly one custom mode can be enabled at a time (`USE_CUSTOM_LAT_BAND_BOUNDS` xor `USE_CUSTOM_LAT_BAND_SEGMENTS`):
   - `NLAT_BANDS`
   - `USE_CUSTOM_LAT_BAND_BOUNDS`
   - `LAT_BAND_BOUNDS` (comma-separated boundary list)
+  - `USE_CUSTOM_LAT_BAND_SEGMENTS`
+  - `LAT_BAND_SEGMENTS` (segment specification string)
+- Segment specification format for `LAT_BAND_SEGMENTS`:
+  - One band spec per `;` (must match `NLAT_BANDS`)
+  - One or more segments per band separated by `,`
+  - Each segment written as `south:north`
+  - Example (`NLAT_BANDS=2`): `-60:-30,30:60;-30:30`
 - Default output roots:
   - control: `/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_monthly_by_lat_band`
   - warming: `/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_monthly_by_lat_band_PLUS_4K_CO2_1270ppmv`
+
+#### Options for `launcher/compute_work_async_histograms_by_lat_band_noslurm.sh`
+
+The launcher is configured through environment variables (no positional CLI arguments).
+
+- Core run selection:
+  - `SIMULATION`: `control_monthly_by_lat_band` (default) or `warming_monthly_by_lat_band`
+  - `AGGREGATION_MODE`: `monthly` (default) or `daily`
+  - `GROUP_BY_PERIOD`: `0` (default; one output per source date) or `1` (one-pass grouped period mode)
+
+- Input and output paths:
+  - `LIST_FILE_PART1`, `LIST_FILE_PART2`: date lists for each source root
+  - `TARGET_DIR_HIST_BASE`: base histogram output directory (effective output is `<base>/<RUN_ID>`)
+  - `TARGET_DIR_HIST`: explicit output directory (overrides derived path)
+  - `COMPUTE_BIN`: histogram executable path
+
+- Latitude-band configuration:
+  - `NLAT_BANDS`
+  - `USE_CUSTOM_LAT_BAND_BOUNDS=true` with `LAT_BAND_BOUNDS` as comma-separated boundaries
+  - `USE_CUSTOM_LAT_BAND_SEGMENTS=true` with `LAT_BAND_SEGMENTS` using `south:north[,south:north...];...`
+  - Only one custom mode may be enabled at a time (`USE_CUSTOM_LAT_BAND_BOUNDS` xor `USE_CUSTOM_LAT_BAND_SEGMENTS`)
+
+- Runtime and logging:
+  - `OMP_NUM_THREADS`
+  - `RUN_ID_ROOT` (prefix for run id)
+  - `LOG_DIR`, `MANIFEST_DIR`, `MANIFEST_TOOL`
+
+- Source-validation fault tolerance:
+  - `continue_on_source_error`: defaults to `.true.` in the histogram executable and can be set in namelists.
+  - When enabled, per-source structural/open/time-axis failures are logged and that source date is skipped instead of aborting the whole run.
+  - A sidecar TSV incident log is written at `<path_hist_out>.skipped_sources.tsv` with one row per skipped source plus summary counters.
+  - If all sources are skipped, the run still exits nonzero to prevent silently empty outputs.
+
+- HDF5 behavior:
+  - `HDF5_USE_FILE_LOCKING`: defaults to `FALSE` in the launcher to reduce shared-filesystem HDF5 write failures; override if needed.
+
+### `launcher/compute_prate_threshold_by_lat_band_noslurm.sh`
+
+Serial launcher for percentile-threshold generation by latitude band:
+
+- Uses `SIMULATION=${SIMULATION:-control}` to choose control or warming inputs.
+- Reads dates from paired `LIST_FILE_PART1` and `LIST_FILE_PART2` and maps each list to its matching source root.
+- Runs `compute_prate_thresholds_by_lat_band` once and writes one thresholds ASCII file.
+- Supports the same custom latitude-band modes as histogram-by-lat-band launchers:
+  - bounds mode: `USE_CUSTOM_LAT_BAND_BOUNDS=true` with `LAT_BAND_BOUNDS`
+  - segment mode: `USE_CUSTOM_LAT_BAND_SEGMENTS=true` with `LAT_BAND_SEGMENTS`
+- Segment specification uses the same format:
+  - Example (`NLAT_BANDS=2`): `-60:-30,30:60;-30:30`
 
 ### Launcher Environment Overrides (Run-Aware Layout)
 
@@ -294,6 +354,14 @@ Advanced overrides remain available through environment variables such as:
 - `TARGET_DIR_COMPUTE`
 - `TARGET_DIR_HISTOGRAMS`
 - `THRESHOLD_FILE`
+
+For by-lat-band launchers, latitude-band overrides are also available:
+
+- `NLAT_BANDS`
+- `USE_CUSTOM_LAT_BAND_BOUNDS`
+- `LAT_BAND_BOUNDS`
+- `USE_CUSTOM_LAT_BAND_SEGMENTS`
+- `LAT_BAND_SEGMENTS`
 
 Launcher-generated namelists are now written under `output/namelists/`.
 They are deleted after successful runs, but a failed Fortran invocation leaves the namelist behind for inspection.

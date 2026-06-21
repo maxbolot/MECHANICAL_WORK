@@ -31,13 +31,17 @@ program compute_work_async_histograms_by_lat_band
     character(len=255) :: target_period_key
     character(len=255) :: time_units, time_calendar
     character(len=255) :: source_dir_current
+    character(len=255) :: source_date_current
     character(len=255) :: self_date, self_root
+    character(len=512) :: incident_log_path
+    character(len=512) :: skip_detail
 
     integer, parameter :: chunk_size = 144
     integer, parameter :: nbuf = 2
     integer, parameter :: npr_edges = 1201
     integer, parameter :: nwork_edges = 5001
     integer, parameter :: max_lat_band_bounds = 181
+    integer, parameter :: max_segments_per_band = 8
 
     double precision, parameter :: fill_value = -9999.0d0
 
@@ -72,16 +76,22 @@ program compute_work_async_histograms_by_lat_band
     integer :: nmonths
 
     integer :: nx, ny, nplev, nt
+    integer :: nt_src
+    integer :: nt_read_src
     integer :: nlat_bands
     integer :: lat_band_bounds_count
     logical :: use_custom_lat_band_bounds
+    logical :: use_custom_lat_band_segments
     double precision :: lat_band_bounds(max_lat_band_bounds)
+    integer :: lat_band_segment_count(max_lat_band_bounds - 1)
+    double precision :: lat_band_segment_south(max_segments_per_band, max_lat_band_bounds - 1)
+    double precision :: lat_band_segment_north(max_segments_per_band, max_lat_band_bounds - 1)
     double precision :: lat_band_south(max_lat_band_bounds - 1)
     double precision :: lat_band_north(max_lat_band_bounds - 1)
-    integer :: lat_band_start(max_lat_band_bounds - 1)
-    integer :: lat_band_end(max_lat_band_bounds - 1)
+    integer :: lat_band_start(max_segments_per_band, max_lat_band_bounds - 1)
+    integer :: lat_band_end(max_segments_per_band, max_lat_band_bounds - 1)
 
-    integer :: t, p, x, y, yc, ibuf, istate, iday, ilat
+    integer :: t, p, x, y, yc, ibuf, istate, iday, ilat, iseg
     integer :: nchunks, ystart
     integer :: nx_chunk, ny_chunk, y_local_start, y_local_end
     integer :: hist_y_start, hist_y_end
@@ -96,9 +106,14 @@ program compute_work_async_histograms_by_lat_band
     integer :: ncstatus
     integer :: varid_dz, varid_temp, varid_omega, varid_qv, varid_qw, varid_qr, varid_qi, varid_qs, varid_qg
     integer :: varid_omt, varid_omqv, varid_omqw, varid_omqr, varid_omqi, varid_omqs, varid_omqg, varid_pr
+    integer :: nt_omega_src, nt_qv_src, nt_qw_src, nt_qr_src, nt_qi_src, nt_qs_src, nt_qg_src
+    integer :: nt_omt_src, nt_omqv_src, nt_omqw_src, nt_omqr_src, nt_omqi_src, nt_omqs_src, nt_omqg_src
+    integer :: nx_var, ny_var, nz_var, nt_var
     integer :: varid_lon, varid_lat, varid_time
     integer :: varid_out_lon, varid_out_lat, varid_out_time, varid_lat_band
     integer :: varid_lat_band_south, varid_lat_band_north
+    integer :: varid_lat_band_segment_count
+    integer :: varid_lat_band_segment_south, varid_lat_band_segment_north
     integer :: varid_hist_area, varid_hist_work, varid_hist_lift
     integer :: varid_hist2d_work, varid_hist2d_lift
     integer :: dimid_out_lon, dimid_out_lat, dimid_out_time, dimid_out_pr, dimid_out_work
@@ -106,6 +121,7 @@ program compute_work_async_histograms_by_lat_band
     integer :: dimid_nbin_pr, dimid_nbin_work, dimid_nedges_pr, dimid_nedges_work
     integer :: dimid_hist_time
     integer :: dimid_hist_nlat
+    integer :: dimid_hist_nsegment
     integer :: iedge
     double precision :: pr_edges(npr_edges)
     double precision :: work_edges(nwork_edges)
@@ -114,6 +130,7 @@ program compute_work_async_histograms_by_lat_band
     double precision :: lat_south, lat_north
     character(len=64) :: attr_name
     character(len=32) :: lat_mode
+    character(len=5) :: continue_mode_attr
     character(len=32) :: aggregation_mode
     character(len=255) :: lower_units, ref_string
     integer :: ref_year, ref_month, ref_day
@@ -124,9 +141,14 @@ program compute_work_async_histograms_by_lat_band
     integer :: band_n
     integer :: isrc, n_sources, n_targets
     integer :: list_unit, line_count
+    integer :: incident_log_unit
+    integer :: sources_processed, sources_skipped
+    integer :: got_nx, got_ny, got_nz, got_nt
     logical :: use_period_filter
+    logical :: continue_on_source_error
     logical :: first_time_set
     logical :: matches_period
+    logical :: band_has_data
 
     character(len=255), allocatable :: source_dates(:)
     character(len=255), allocatable :: source_roots(:)
@@ -146,7 +168,8 @@ program compute_work_async_histograms_by_lat_band
     namelist /config/ path_dz, path_temp, path_omega, path_qv, path_qw, path_qr, path_qi, path_qs, path_qg, &
                      path_omt, path_omqv, path_omqw, path_omqr, path_omqi, path_omqs, path_omqg, path_pr, &
                      path_hist_out, nlat_bands, lat_band_bounds_count, lat_band_bounds, use_custom_lat_band_bounds, aggregation_mode, &
-                     date_list_file, target_period_key
+                     date_list_file, target_period_key, use_custom_lat_band_segments, lat_band_segment_count, &
+                     lat_band_segment_south, lat_band_segment_north, continue_on_source_error
 
     path_dz = ''
     path_temp = ''
@@ -171,8 +194,13 @@ program compute_work_async_histograms_by_lat_band
     nlat_bands = 18
     lat_band_bounds_count = 0
     use_custom_lat_band_bounds = .false.
+    use_custom_lat_band_segments = .false.
+    continue_on_source_error = .true.
     aggregation_mode = 'monthly'
     lat_band_bounds = 1.0d99
+    lat_band_segment_count = 0
+    lat_band_segment_south = 1.0d99
+    lat_band_segment_north = 1.0d99
 
     ! Read runtime configuration from the namelist file passed on argv(1).
     call get_command_argument(1, filenml)
@@ -233,24 +261,30 @@ program compute_work_async_histograms_by_lat_band
             stop 1
         end if
 
-        source_dir_current = trim(source_roots(1))//'/'//trim(source_dates(1))
-        path_dz = trim(source_dir_current)//'/DZ_C3072_1440x720.fre.nc'
-        path_temp = trim(source_dir_current)//'/temp_coarse_C3072_1440x720.fre.nc'
-        path_omega = trim(source_dir_current)//'/ptend_coarse_C3072_1440x720.fre.nc'
-        path_qv = trim(source_dir_current)//'/sphum_coarse_C3072_1440x720.fre.nc'
-        path_qw = trim(source_dir_current)//'/liq_wat_coarse_C3072_1440x720.fre.nc'
-        path_qr = trim(source_dir_current)//'/rainwat_coarse_C3072_1440x720.fre.nc'
-        path_qi = trim(source_dir_current)//'/ice_wat_coarse_C3072_1440x720.fre.nc'
-        path_qs = trim(source_dir_current)//'/snowwat_coarse_C3072_1440x720.fre.nc'
-        path_qg = trim(source_dir_current)//'/graupel_coarse_C3072_1440x720.fre.nc'
-        path_omt = trim(source_dir_current)//'/omT_coarse_C3072_1440x720.fre.nc'
-        path_omqv = trim(source_dir_current)//'/omqv_coarse_C3072_1440x720.fre.nc'
-        path_omqw = trim(source_dir_current)//'/omql_coarse_C3072_1440x720.fre.nc'
-        path_omqr = trim(source_dir_current)//'/omqr_coarse_C3072_1440x720.fre.nc'
-        path_omqi = trim(source_dir_current)//'/omqi_coarse_C3072_1440x720.fre.nc'
-        path_omqs = trim(source_dir_current)//'/omqs_coarse_C3072_1440x720.fre.nc'
-        path_omqg = trim(source_dir_current)//'/omqg_coarse_C3072_1440x720.fre.nc'
-        path_pr = trim(source_dir_current)//'/PRATEsfc_coarse_C3072_1440x720.fre.nc'
+        if (len_trim(path_dz) == 0 .or. len_trim(path_temp) == 0 .or. len_trim(path_omega) == 0 .or. len_trim(path_qv) == 0 .or. &
+            len_trim(path_qw) == 0 .or. len_trim(path_qr) == 0 .or. len_trim(path_qi) == 0 .or. len_trim(path_qs) == 0 .or. &
+            len_trim(path_qg) == 0 .or. len_trim(path_omt) == 0 .or. len_trim(path_omqv) == 0 .or. len_trim(path_omqw) == 0 .or. &
+            len_trim(path_omqr) == 0 .or. len_trim(path_omqi) == 0 .or. len_trim(path_omqs) == 0 .or. len_trim(path_omqg) == 0 .or. &
+            len_trim(path_pr) == 0) then
+            source_dir_current = trim(source_roots(1))//'/'//trim(source_dates(1))
+            path_dz = trim(source_dir_current)//'/DZ_C3072_1440x720.fre.nc'
+            path_temp = trim(source_dir_current)//'/temp_coarse_C3072_1440x720.fre.nc'
+            path_omega = trim(source_dir_current)//'/ptend_coarse_C3072_1440x720.fre.nc'
+            path_qv = trim(source_dir_current)//'/sphum_coarse_C3072_1440x720.fre.nc'
+            path_qw = trim(source_dir_current)//'/liq_wat_coarse_C3072_1440x720.fre.nc'
+            path_qr = trim(source_dir_current)//'/rainwat_coarse_C3072_1440x720.fre.nc'
+            path_qi = trim(source_dir_current)//'/ice_wat_coarse_C3072_1440x720.fre.nc'
+            path_qs = trim(source_dir_current)//'/snowwat_coarse_C3072_1440x720.fre.nc'
+            path_qg = trim(source_dir_current)//'/graupel_coarse_C3072_1440x720.fre.nc'
+            path_omt = trim(source_dir_current)//'/omT_coarse_C3072_1440x720.fre.nc'
+            path_omqv = trim(source_dir_current)//'/omqv_coarse_C3072_1440x720.fre.nc'
+            path_omqw = trim(source_dir_current)//'/omql_coarse_C3072_1440x720.fre.nc'
+            path_omqr = trim(source_dir_current)//'/omqr_coarse_C3072_1440x720.fre.nc'
+            path_omqi = trim(source_dir_current)//'/omqi_coarse_C3072_1440x720.fre.nc'
+            path_omqs = trim(source_dir_current)//'/omqs_coarse_C3072_1440x720.fre.nc'
+            path_omqg = trim(source_dir_current)//'/omqg_coarse_C3072_1440x720.fre.nc'
+            path_pr = trim(source_dir_current)//'/PRATEsfc_coarse_C3072_1440x720.fre.nc'
+        end if
     else
         n_sources = 1
     end if
@@ -313,7 +347,29 @@ program compute_work_async_histograms_by_lat_band
     allocate(lat(ny))
     allocate(time_vals(nt))
 
-    if (use_custom_lat_band_bounds) then
+    if (use_custom_lat_band_bounds .and. use_custom_lat_band_segments) then
+        write(error_unit,*) 'Choose either use_custom_lat_band_bounds or use_custom_lat_band_segments, not both.'
+        stop 1
+    end if
+
+    if (use_custom_lat_band_segments) then
+        do ilat = 1, nlat_bands
+            if (lat_band_segment_count(ilat) <= 0 .or. lat_band_segment_count(ilat) > max_segments_per_band) then
+                write(error_unit,*) 'lat_band_segment_count out of range for band ', ilat
+                stop 1
+            end if
+            do iseg = 1, lat_band_segment_count(ilat)
+                if (lat_band_segment_south(iseg, ilat) >= lat_band_segment_north(iseg, ilat)) then
+                    write(error_unit,*) 'lat band segment has south >= north for band/segment ', ilat, iseg
+                    stop 1
+                end if
+                if (lat_band_segment_south(iseg, ilat) < -90.0d0 .or. lat_band_segment_north(iseg, ilat) > 90.0d0) then
+                    write(error_unit,*) 'lat band segment bounds must be inside [-90,90] for band/segment ', ilat, iseg
+                    stop 1
+                end if
+            end do
+        end do
+    else if (use_custom_lat_band_bounds) then
         if (lat_band_bounds_count /= nlat_bands + 1) then
             write(error_unit,*) 'lat_band_bounds_count must equal nlat_bands + 1 when custom bounds are enabled.'
             stop 1
@@ -393,16 +449,49 @@ program compute_work_async_histograms_by_lat_band
 
     call compute_cell_areas(lon, lat, cell_area)
 
-    call resolve_lat_band_boundaries(nlat_bands, lat_band_bounds_count, use_custom_lat_band_bounds, lat_band_bounds, lat_band_south, lat_band_north)
+    call resolve_lat_band_segments(nlat_bands, lat_band_bounds_count, use_custom_lat_band_bounds, lat_band_bounds, &
+                                   use_custom_lat_band_segments, lat_band_segment_count, lat_band_segment_south, lat_band_segment_north, &
+                                   lat_band_south, lat_band_north)
     do ilat = 1, nlat_bands
-        call resolve_lat_band_indices(lat, lat_band_south(ilat), lat_band_north(ilat), lat_band_start(ilat), lat_band_end(ilat))
+        do iseg = 1, lat_band_segment_count(ilat)
+            call resolve_lat_band_indices(lat, lat_band_segment_south(iseg, ilat), lat_band_segment_north(iseg, ilat), lat_band_start(iseg, ilat), lat_band_end(iseg, ilat))
+        end do
     end do
 
     first_time_set = .false.
+    sources_processed = 0
+    sources_skipped = 0
+    incident_log_unit = -1
+    incident_log_path = trim(path_hist_out)//'.skipped_sources.tsv'
+    open(newunit=incident_log_unit, file=trim(incident_log_path), status='replace', action='write', iostat=ios, iomsg=msg)
+    if (ios == 0) then
+        write(incident_log_unit,'(A)') 'source_date'//char(9)//'stage'//char(9)//'variable'//char(9)//'detail'
+    else
+        incident_log_unit = -1
+        write(error_unit,*) 'Warning: failed to open incident log file, iomsg='//trim(msg)
+    end if
 
-    do isrc = 1, n_sources
+    source_loop: do isrc = 1, n_sources
+        source_date_current = 'single_source'
+        ncid_temp = -1
+        ncid_omega = -1
+        ncid_qv = -1
+        ncid_qw = -1
+        ncid_qr = -1
+        ncid_qi = -1
+        ncid_qs = -1
+        ncid_qg = -1
+        ncid_omt = -1
+        ncid_omqv = -1
+        ncid_omqw = -1
+        ncid_omqr = -1
+        ncid_omqi = -1
+        ncid_omqs = -1
+        ncid_omqg = -1
+        ncid_pr = -1
         if (len_trim(date_list_file) > 0) then
             source_dir_current = trim(source_roots(isrc))//'/'//trim(source_dates(isrc))
+            source_date_current = trim(source_dates(isrc))
             path_dz = trim(source_dir_current)//'/DZ_C3072_1440x720.fre.nc'
             path_temp = trim(source_dir_current)//'/temp_coarse_C3072_1440x720.fre.nc'
             path_omega = trim(source_dir_current)//'/ptend_coarse_C3072_1440x720.fre.nc'
@@ -420,40 +509,179 @@ program compute_work_async_histograms_by_lat_band
             path_omqs = trim(source_dir_current)//'/omqs_coarse_C3072_1440x720.fre.nc'
             path_omqg = trim(source_dir_current)//'/omqg_coarse_C3072_1440x720.fre.nc'
             path_pr = trim(source_dir_current)//'/PRATEsfc_coarse_C3072_1440x720.fre.nc'
+            write(*,'(A,I0,A,A)') 'source ', isrc, ': ', trim(source_dates(isrc))
         end if
 
-        call check(nf90_open(trim(adjustl(path_temp)), nf90_nowrite, ncid_temp))
+        ! In date-list mode, reopen DZ for each source date so the time
+        ! dimension follows the current source cadence.
+        if (ncid_dz > 0) call check(nf90_close(ncid_dz))
+        ncid_dz = -1
+        ncstatus = nf90_open(trim(adjustl(path_dz)), nf90_nowrite, ncid_dz)
+        if (ncstatus /= nf90_noerr) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'open', 'DZ', trim(nf90_strerror(ncstatus)))
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        call check(nf90_inq_varid(ncid_dz, 'DZ', varid_dz))
+
+        ncstatus = nf90_open(trim(adjustl(path_temp)), nf90_nowrite, ncid_temp)
+        if (ncstatus /= nf90_noerr) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'open', 'temp_coarse', trim(nf90_strerror(ncstatus)))
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        call check(nf90_inq_varid(ncid_temp, 'temp_coarse', varid_temp))
+        call check(nf90_inquire_variable(ncid_temp, varid_temp, dimids=tmp_dimids))
+        call check(nf90_inquire_dimension(ncid_temp, tmp_dimids(4), len=nt_src))
+
+        ! Date-list mode may mix sources with different record counts. Use
+        ! source-local nt to avoid out-of-bounds NetCDF reads.
+        if (.not. use_period_filter .and. nt_src /= nt) then
+            write(error_unit,*) 'In non-period mode, all sources must have the same nt. expected/got=', nt, nt_src
+            stop 1
+        end if
+        if (nt_src > size(time_vals)) then
+            deallocate(time_vals)
+            allocate(time_vals(nt_src))
+        end if
+
         time_units = 'hours since 1900-01-01 00:00:00'
         time_calendar = 'standard'
-        do t = 1, nt
+        do t = 1, nt_src
             time_vals(t) = dble(t - 1)
         end do
         ncstatus = nf90_inq_varid(ncid_temp, 'time', varid_time)
         if (ncstatus == nf90_noerr) then
-            call check(nf90_get_var(ncid_temp, varid_time, time_vals))
+            call check(nf90_get_var(ncid_temp, varid_time, time_vals(1:nt_src)))
             ncstatus = nf90_get_att(ncid_temp, varid_time, 'units', time_units)
             if (ncstatus /= nf90_noerr) time_units = 'hours since 1900-01-01 00:00:00'
             ncstatus = nf90_get_att(ncid_temp, varid_time, 'calendar', time_calendar)
             if (ncstatus /= nf90_noerr) time_calendar = 'standard'
         end if
 
-        call check(nf90_open(trim(adjustl(path_omega)), nf90_nowrite, ncid_omega))
-        call check(nf90_open(trim(adjustl(path_qv)), nf90_nowrite, ncid_qv))
-        call check(nf90_open(trim(adjustl(path_qw)), nf90_nowrite, ncid_qw))
-        call check(nf90_open(trim(adjustl(path_qr)), nf90_nowrite, ncid_qr))
-        call check(nf90_open(trim(adjustl(path_qi)), nf90_nowrite, ncid_qi))
-        call check(nf90_open(trim(adjustl(path_qs)), nf90_nowrite, ncid_qs))
-        call check(nf90_open(trim(adjustl(path_qg)), nf90_nowrite, ncid_qg))
-        call check(nf90_open(trim(adjustl(path_omt)), nf90_nowrite, ncid_omt))
-        call check(nf90_open(trim(adjustl(path_omqv)), nf90_nowrite, ncid_omqv))
-        call check(nf90_open(trim(adjustl(path_omqw)), nf90_nowrite, ncid_omqw))
-        call check(nf90_open(trim(adjustl(path_omqr)), nf90_nowrite, ncid_omqr))
-        call check(nf90_open(trim(adjustl(path_omqi)), nf90_nowrite, ncid_omqi))
-        call check(nf90_open(trim(adjustl(path_omqs)), nf90_nowrite, ncid_omqs))
-        call check(nf90_open(trim(adjustl(path_omqg)), nf90_nowrite, ncid_omqg))
-        call check(nf90_open(trim(adjustl(path_pr)), nf90_nowrite, ncid_pr))
+        ncstatus = nf90_open(trim(adjustl(path_omega)), nf90_nowrite, ncid_omega)
+        if (ncstatus /= nf90_noerr) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'open', 'ptend_coarse', trim(nf90_strerror(ncstatus)))
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        ncstatus = nf90_open(trim(adjustl(path_qv)), nf90_nowrite, ncid_qv)
+        if (ncstatus /= nf90_noerr) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'open', 'sphum_coarse', trim(nf90_strerror(ncstatus)))
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        ncstatus = nf90_open(trim(adjustl(path_qw)), nf90_nowrite, ncid_qw)
+        if (ncstatus /= nf90_noerr) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'open', 'liq_wat_coarse', trim(nf90_strerror(ncstatus)))
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        ncstatus = nf90_open(trim(adjustl(path_qr)), nf90_nowrite, ncid_qr)
+        if (ncstatus /= nf90_noerr) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'open', 'rainwat_coarse', trim(nf90_strerror(ncstatus)))
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        ncstatus = nf90_open(trim(adjustl(path_qi)), nf90_nowrite, ncid_qi)
+        if (ncstatus /= nf90_noerr) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'open', 'ice_wat_coarse', trim(nf90_strerror(ncstatus)))
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        ncstatus = nf90_open(trim(adjustl(path_qs)), nf90_nowrite, ncid_qs)
+        if (ncstatus /= nf90_noerr) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'open', 'snowwat_coarse', trim(nf90_strerror(ncstatus)))
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        ncstatus = nf90_open(trim(adjustl(path_qg)), nf90_nowrite, ncid_qg)
+        if (ncstatus /= nf90_noerr) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'open', 'graupel_coarse', trim(nf90_strerror(ncstatus)))
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        ncstatus = nf90_open(trim(adjustl(path_omt)), nf90_nowrite, ncid_omt)
+        if (ncstatus /= nf90_noerr) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'open', 'omT_coarse', trim(nf90_strerror(ncstatus)))
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        ncstatus = nf90_open(trim(adjustl(path_omqv)), nf90_nowrite, ncid_omqv)
+        if (ncstatus /= nf90_noerr) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'open', 'omqv_coarse', trim(nf90_strerror(ncstatus)))
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        ncstatus = nf90_open(trim(adjustl(path_omqw)), nf90_nowrite, ncid_omqw)
+        if (ncstatus /= nf90_noerr) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'open', 'omql_coarse', trim(nf90_strerror(ncstatus)))
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        ncstatus = nf90_open(trim(adjustl(path_omqr)), nf90_nowrite, ncid_omqr)
+        if (ncstatus /= nf90_noerr) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'open', 'omqr_coarse', trim(nf90_strerror(ncstatus)))
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        ncstatus = nf90_open(trim(adjustl(path_omqi)), nf90_nowrite, ncid_omqi)
+        if (ncstatus /= nf90_noerr) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'open', 'omqi_coarse', trim(nf90_strerror(ncstatus)))
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        ncstatus = nf90_open(trim(adjustl(path_omqs)), nf90_nowrite, ncid_omqs)
+        if (ncstatus /= nf90_noerr) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'open', 'omqs_coarse', trim(nf90_strerror(ncstatus)))
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        ncstatus = nf90_open(trim(adjustl(path_omqg)), nf90_nowrite, ncid_omqg)
+        if (ncstatus /= nf90_noerr) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'open', 'omqg_coarse', trim(nf90_strerror(ncstatus)))
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        ncstatus = nf90_open(trim(adjustl(path_pr)), nf90_nowrite, ncid_pr)
+        if (ncstatus /= nf90_noerr) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'open', 'PRATEsfc_coarse', trim(nf90_strerror(ncstatus)))
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
 
-        call check(nf90_inq_varid(ncid_temp, 'temp_coarse', varid_temp))
         call check(nf90_inq_varid(ncid_omega, 'ptend_coarse', varid_omega))
         call check(nf90_inq_varid(ncid_qv, 'sphum_coarse', varid_qv))
         call check(nf90_inq_varid(ncid_qw, 'liq_wat_coarse', varid_qw))
@@ -470,6 +698,280 @@ program compute_work_async_histograms_by_lat_band
         call check(nf90_inq_varid(ncid_omqg, 'omqg_coarse', varid_omqg))
         call check(nf90_inq_varid(ncid_pr, 'PRATEsfc_coarse', varid_pr))
 
+        if (.not. check_var_shape(ncid_dz, varid_dz, 'DZ', nx, ny, nplev, nt_src, source_date_current, got_nx, got_ny, got_nz, got_nt)) then
+            write(skip_detail,'(A,4(I0,1X),A,4(I0,1X))') 'expected=', nx, ny, nplev, nt_src, ' got=', got_nx, got_ny, got_nz, got_nt
+            call log_skip_incident(incident_log_unit, source_date_current, 'shape', 'DZ', skip_detail)
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. check_var_shape(ncid_temp, varid_temp, 'temp_coarse', nx, ny, nplev, nt_src, source_date_current, got_nx, got_ny, got_nz, got_nt)) then
+            write(skip_detail,'(A,4(I0,1X),A,4(I0,1X))') 'expected=', nx, ny, nplev, nt_src, ' got=', got_nx, got_ny, got_nz, got_nt
+            call log_skip_incident(incident_log_unit, source_date_current, 'shape', 'temp_coarse', skip_detail)
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. check_var_shape(ncid_omega, varid_omega, 'ptend_coarse', nx, ny, nplev, nt_src, source_date_current, got_nx, got_ny, got_nz, got_nt)) then
+            write(skip_detail,'(A,4(I0,1X),A,4(I0,1X))') 'expected=', nx, ny, nplev, nt_src, ' got=', got_nx, got_ny, got_nz, got_nt
+            call log_skip_incident(incident_log_unit, source_date_current, 'shape', 'ptend_coarse', skip_detail)
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. check_var_shape(ncid_qv, varid_qv, 'sphum_coarse', nx, ny, nplev, nt_src, source_date_current, got_nx, got_ny, got_nz, got_nt)) then
+            write(skip_detail,'(A,4(I0,1X),A,4(I0,1X))') 'expected=', nx, ny, nplev, nt_src, ' got=', got_nx, got_ny, got_nz, got_nt
+            call log_skip_incident(incident_log_unit, source_date_current, 'shape', 'sphum_coarse', skip_detail)
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. check_var_shape(ncid_qw, varid_qw, 'liq_wat_coarse', nx, ny, nplev, nt_src, source_date_current, got_nx, got_ny, got_nz, got_nt)) then
+            write(skip_detail,'(A,4(I0,1X),A,4(I0,1X))') 'expected=', nx, ny, nplev, nt_src, ' got=', got_nx, got_ny, got_nz, got_nt
+            call log_skip_incident(incident_log_unit, source_date_current, 'shape', 'liq_wat_coarse', skip_detail)
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. check_var_shape(ncid_qr, varid_qr, 'rainwat_coarse', nx, ny, nplev, nt_src, source_date_current, got_nx, got_ny, got_nz, got_nt)) then
+            write(skip_detail,'(A,4(I0,1X),A,4(I0,1X))') 'expected=', nx, ny, nplev, nt_src, ' got=', got_nx, got_ny, got_nz, got_nt
+            call log_skip_incident(incident_log_unit, source_date_current, 'shape', 'rainwat_coarse', skip_detail)
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. check_var_shape(ncid_qi, varid_qi, 'ice_wat_coarse', nx, ny, nplev, nt_src, source_date_current, got_nx, got_ny, got_nz, got_nt)) then
+            write(skip_detail,'(A,4(I0,1X),A,4(I0,1X))') 'expected=', nx, ny, nplev, nt_src, ' got=', got_nx, got_ny, got_nz, got_nt
+            call log_skip_incident(incident_log_unit, source_date_current, 'shape', 'ice_wat_coarse', skip_detail)
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. check_var_shape(ncid_qs, varid_qs, 'snowwat_coarse', nx, ny, nplev, nt_src, source_date_current, got_nx, got_ny, got_nz, got_nt)) then
+            write(skip_detail,'(A,4(I0,1X),A,4(I0,1X))') 'expected=', nx, ny, nplev, nt_src, ' got=', got_nx, got_ny, got_nz, got_nt
+            call log_skip_incident(incident_log_unit, source_date_current, 'shape', 'snowwat_coarse', skip_detail)
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. check_var_shape(ncid_qg, varid_qg, 'graupel_coarse', nx, ny, nplev, nt_src, source_date_current, got_nx, got_ny, got_nz, got_nt)) then
+            write(skip_detail,'(A,4(I0,1X),A,4(I0,1X))') 'expected=', nx, ny, nplev, nt_src, ' got=', got_nx, got_ny, got_nz, got_nt
+            call log_skip_incident(incident_log_unit, source_date_current, 'shape', 'graupel_coarse', skip_detail)
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. check_var_shape(ncid_omt, varid_omt, 'omT_coarse', nx, ny, nplev, nt_src, source_date_current, got_nx, got_ny, got_nz, got_nt)) then
+            write(skip_detail,'(A,4(I0,1X),A,4(I0,1X))') 'expected=', nx, ny, nplev, nt_src, ' got=', got_nx, got_ny, got_nz, got_nt
+            call log_skip_incident(incident_log_unit, source_date_current, 'shape', 'omT_coarse', skip_detail)
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. check_var_shape(ncid_omqv, varid_omqv, 'omqv_coarse', nx, ny, nplev, nt_src, source_date_current, got_nx, got_ny, got_nz, got_nt)) then
+            write(skip_detail,'(A,4(I0,1X),A,4(I0,1X))') 'expected=', nx, ny, nplev, nt_src, ' got=', got_nx, got_ny, got_nz, got_nt
+            call log_skip_incident(incident_log_unit, source_date_current, 'shape', 'omqv_coarse', skip_detail)
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. check_var_shape(ncid_omqw, varid_omqw, 'omql_coarse', nx, ny, nplev, nt_src, source_date_current, got_nx, got_ny, got_nz, got_nt)) then
+            write(skip_detail,'(A,4(I0,1X),A,4(I0,1X))') 'expected=', nx, ny, nplev, nt_src, ' got=', got_nx, got_ny, got_nz, got_nt
+            call log_skip_incident(incident_log_unit, source_date_current, 'shape', 'omql_coarse', skip_detail)
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. check_var_shape(ncid_omqr, varid_omqr, 'omqr_coarse', nx, ny, nplev, nt_src, source_date_current, got_nx, got_ny, got_nz, got_nt)) then
+            write(skip_detail,'(A,4(I0,1X),A,4(I0,1X))') 'expected=', nx, ny, nplev, nt_src, ' got=', got_nx, got_ny, got_nz, got_nt
+            call log_skip_incident(incident_log_unit, source_date_current, 'shape', 'omqr_coarse', skip_detail)
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. check_var_shape(ncid_omqi, varid_omqi, 'omqi_coarse', nx, ny, nplev, nt_src, source_date_current, got_nx, got_ny, got_nz, got_nt)) then
+            write(skip_detail,'(A,4(I0,1X),A,4(I0,1X))') 'expected=', nx, ny, nplev, nt_src, ' got=', got_nx, got_ny, got_nz, got_nt
+            call log_skip_incident(incident_log_unit, source_date_current, 'shape', 'omqi_coarse', skip_detail)
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. check_var_shape(ncid_omqs, varid_omqs, 'omqs_coarse', nx, ny, nplev, nt_src, source_date_current, got_nx, got_ny, got_nz, got_nt)) then
+            write(skip_detail,'(A,4(I0,1X),A,4(I0,1X))') 'expected=', nx, ny, nplev, nt_src, ' got=', got_nx, got_ny, got_nz, got_nt
+            call log_skip_incident(incident_log_unit, source_date_current, 'shape', 'omqs_coarse', skip_detail)
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. check_var_shape(ncid_omqg, varid_omqg, 'omqg_coarse', nx, ny, nplev, nt_src, source_date_current, got_nx, got_ny, got_nz, got_nt)) then
+            write(skip_detail,'(A,4(I0,1X),A,4(I0,1X))') 'expected=', nx, ny, nplev, nt_src, ' got=', got_nx, got_ny, got_nz, got_nt
+            call log_skip_incident(incident_log_unit, source_date_current, 'shape', 'omqg_coarse', skip_detail)
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. check_var_shape(ncid_pr, varid_pr, 'PRATEsfc_coarse', nx, ny, 1, nt_src, source_date_current, got_nx, got_ny, got_nz, got_nt)) then
+            write(skip_detail,'(A,4(I0,1X),A,4(I0,1X))') 'expected=', nx, ny, 1, nt_src, ' got=', got_nx, got_ny, got_nz, got_nt
+            call log_skip_incident(incident_log_unit, source_date_current, 'shape', 'PRATEsfc_coarse', skip_detail)
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+
+        call get_var_time_len(ncid_omega, varid_omega, nt_omega_src)
+        call get_var_time_len(ncid_qv, varid_qv, nt_qv_src)
+        call get_var_time_len(ncid_qw, varid_qw, nt_qw_src)
+        call get_var_time_len(ncid_qr, varid_qr, nt_qr_src)
+        call get_var_time_len(ncid_qi, varid_qi, nt_qi_src)
+        call get_var_time_len(ncid_qs, varid_qs, nt_qs_src)
+        call get_var_time_len(ncid_qg, varid_qg, nt_qg_src)
+        call get_var_time_len(ncid_omt, varid_omt, nt_omt_src)
+        call get_var_time_len(ncid_omqv, varid_omqv, nt_omqv_src)
+        call get_var_time_len(ncid_omqw, varid_omqw, nt_omqw_src)
+        call get_var_time_len(ncid_omqr, varid_omqr, nt_omqr_src)
+        call get_var_time_len(ncid_omqi, varid_omqi, nt_omqi_src)
+        call get_var_time_len(ncid_omqs, varid_omqs, nt_omqs_src)
+        call get_var_time_len(ncid_omqg, varid_omqg, nt_omqg_src)
+
+        nt_read_src = nt_src
+        nt_read_src = min(nt_read_src, nt_omega_src)
+        nt_read_src = min(nt_read_src, nt_qv_src)
+        nt_read_src = min(nt_read_src, nt_qw_src)
+        nt_read_src = min(nt_read_src, nt_qr_src)
+        nt_read_src = min(nt_read_src, nt_qi_src)
+        nt_read_src = min(nt_read_src, nt_qs_src)
+        nt_read_src = min(nt_read_src, nt_qg_src)
+        nt_read_src = min(nt_read_src, nt_omt_src)
+        nt_read_src = min(nt_read_src, nt_omqv_src)
+        nt_read_src = min(nt_read_src, nt_omqw_src)
+        nt_read_src = min(nt_read_src, nt_omqr_src)
+        nt_read_src = min(nt_read_src, nt_omqi_src)
+        nt_read_src = min(nt_read_src, nt_omqs_src)
+        nt_read_src = min(nt_read_src, nt_omqg_src)
+
+        if (use_period_filter .and. nt_read_src /= nt_src) then
+            write(skip_detail,'(A, I0, A, I0)') 'using common cadence nt=', nt_read_src, ' from source nt=', nt_src
+            call log_source_incident(incident_log_unit, source_date_current, 'cadence', 'source_set', skip_detail)
+        end if
+
+        if (.not. verify_time_axis_matches(ncid_omega, 'ptend_coarse', time_vals(1:nt_src), time_units, time_calendar, nt_src, nt_omega_src, source_date_current)) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'time_axis', 'ptend_coarse', 'time axis mismatch')
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. verify_time_axis_matches(ncid_qv, 'sphum_coarse', time_vals(1:nt_src), time_units, time_calendar, nt_src, nt_qv_src, source_date_current)) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'time_axis', 'sphum_coarse', 'time axis mismatch')
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. verify_time_axis_matches(ncid_qw, 'liq_wat_coarse', time_vals(1:nt_src), time_units, time_calendar, nt_src, nt_qw_src, source_date_current)) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'time_axis', 'liq_wat_coarse', 'time axis mismatch')
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. verify_time_axis_matches(ncid_qr, 'rainwat_coarse', time_vals(1:nt_src), time_units, time_calendar, nt_src, nt_qr_src, source_date_current)) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'time_axis', 'rainwat_coarse', 'time axis mismatch')
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. verify_time_axis_matches(ncid_qi, 'ice_wat_coarse', time_vals(1:nt_src), time_units, time_calendar, nt_src, nt_qi_src, source_date_current)) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'time_axis', 'ice_wat_coarse', 'time axis mismatch')
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. verify_time_axis_matches(ncid_qs, 'snowwat_coarse', time_vals(1:nt_src), time_units, time_calendar, nt_src, nt_qs_src, source_date_current)) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'time_axis', 'snowwat_coarse', 'time axis mismatch')
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. verify_time_axis_matches(ncid_qg, 'graupel_coarse', time_vals(1:nt_src), time_units, time_calendar, nt_src, nt_qg_src, source_date_current)) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'time_axis', 'graupel_coarse', 'time axis mismatch')
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. verify_time_axis_matches(ncid_omt, 'omT_coarse', time_vals(1:nt_src), time_units, time_calendar, nt_src, nt_omt_src, source_date_current)) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'time_axis', 'omT_coarse', 'time axis mismatch')
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. verify_time_axis_matches(ncid_omqv, 'omqv_coarse', time_vals(1:nt_src), time_units, time_calendar, nt_src, nt_omqv_src, source_date_current)) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'time_axis', 'omqv_coarse', 'time axis mismatch')
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. verify_time_axis_matches(ncid_omqw, 'omql_coarse', time_vals(1:nt_src), time_units, time_calendar, nt_src, nt_omqw_src, source_date_current)) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'time_axis', 'omql_coarse', 'time axis mismatch')
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. verify_time_axis_matches(ncid_omqr, 'omqr_coarse', time_vals(1:nt_src), time_units, time_calendar, nt_src, nt_omqr_src, source_date_current)) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'time_axis', 'omqr_coarse', 'time axis mismatch')
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. verify_time_axis_matches(ncid_omqi, 'omqi_coarse', time_vals(1:nt_src), time_units, time_calendar, nt_src, nt_omqi_src, source_date_current)) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'time_axis', 'omqi_coarse', 'time axis mismatch')
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. verify_time_axis_matches(ncid_omqs, 'omqs_coarse', time_vals(1:nt_src), time_units, time_calendar, nt_src, nt_omqs_src, source_date_current)) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'time_axis', 'omqs_coarse', 'time axis mismatch')
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+        if (.not. verify_time_axis_matches(ncid_omqg, 'omqg_coarse', time_vals(1:nt_src), time_units, time_calendar, nt_src, nt_omqg_src, source_date_current)) then
+            call log_skip_incident(incident_log_unit, source_date_current, 'time_axis', 'omqg_coarse', 'time axis mismatch')
+            call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+            sources_skipped = sources_skipped + 1
+            if (.not. continue_on_source_error) stop 1
+            cycle source_loop
+        end if
+
+        nt_read_src = min(nt_read_src, nt_src)
+
     ! PR bins follow the same piecewise-log spacing used in threshold workflows.
     call init_piecewise_log_bins(pr_edges)
     do iedge = 1, nwork_edges
@@ -482,8 +984,8 @@ program compute_work_async_histograms_by_lat_band
     !$omp parallel default(shared) private(t,yc,ibuf,istate,ystart,y,x,p,work_acc,lift_acc,geometric_thickness,ilat,hist_y_start,hist_y_end,y_local_start,y_local_end,month_norm,hist_area_chunk,hist_work_chunk,hist_lift_chunk,hist2d_work_chunk,hist2d_lift_chunk,matches_period)
     !$omp master
 
-    do t = 1, nt
-        print *, 'timestep', t, 'of', nt
+    do t = 1, nt_read_src
+        print *, 'timestep', t, 'of', nt_read_src
         if (use_period_filter) then
             call time_matches_target_period(time_vals(t), time_units, time_calendar, aggregation_mode, target_period_key, matches_period)
             if (.not. matches_period) cycle
@@ -549,7 +1051,7 @@ program compute_work_async_histograms_by_lat_band
             ! Compute task: consumes a filled slot, accumulates local histograms,
             ! then reduces into shared monthly outputs.
             !$omp task depend(in: fetch_ready(ibuf)) firstprivate(ibuf, ystart, t, iday) &
-            !$omp&    private(y,x,p,work_acc,lift_acc,geometric_thickness,ilat,hist_y_start,hist_y_end,y_local_start,y_local_end,month_norm,hist_area_chunk,hist_work_chunk,hist_lift_chunk,hist2d_work_chunk,hist2d_lift_chunk)
+            !$omp&    private(y,x,p,work_acc,lift_acc,geometric_thickness,ilat,iseg,hist_y_start,hist_y_end,y_local_start,y_local_end,band_has_data,month_norm,hist_area_chunk,hist_work_chunk,hist_lift_chunk,hist2d_work_chunk,hist2d_lift_chunk)
                 allocate(hist_area_chunk(npr_edges - 1))
                 allocate(hist_work_chunk(npr_edges - 1))
                 allocate(hist_lift_chunk(npr_edges - 1))
@@ -557,47 +1059,53 @@ program compute_work_async_histograms_by_lat_band
                 allocate(hist2d_lift_chunk(npr_edges - 1, nwork_edges - 1))
 
                 do ilat = 1, nlat_bands
-                    if (lat_band_start(ilat) > lat_band_end(ilat)) cycle
-                    hist_y_start = max(ystart, lat_band_start(ilat))
-                    hist_y_end = min(ystart + min(chunk_size, ny - ystart + 1) - 1, lat_band_end(ilat))
-                    if (hist_y_start > hist_y_end) cycle
-
-                    y_local_start = hist_y_start - ystart + 1
-                    y_local_end = hist_y_end - ystart + 1
-
                     hist_area_chunk = 0.0d0
                     hist_work_chunk = 0.0d0
                     hist_lift_chunk = 0.0d0
                     hist2d_work_chunk = 0.0d0
                     hist2d_lift_chunk = 0.0d0
 
-                    do y = y_local_start, y_local_end
-                        do x = 1, nx
-                            work_acc = 0.0d0
-                            lift_acc = 0.0d0
-                            do p = 1, nplev
-                                geometric_thickness = -dz_buffer(x,y,p,1,ibuf)
-                                work_acc = work_acc - &
-                                    (omt_buffer(x,y,p,1,ibuf) / temp_buffer(x,y,p,1,ibuf) + 1.61d0 * (omqv_buffer(x,y,p,1,ibuf) + omega_buffer(x,y,p,1,ibuf) * qv_buffer(x,y,p,1,ibuf))) * geometric_thickness
-                                lift_acc = lift_acc - &
-                                    (omega_buffer(x,y,p,1,ibuf) * (qv_buffer(x,y,p,1,ibuf) + qw_buffer(x,y,p,1,ibuf) + qr_buffer(x,y,p,1,ibuf) + qi_buffer(x,y,p,1,ibuf) + qs_buffer(x,y,p,1,ibuf) + qg_buffer(x,y,p,1,ibuf)) &
-                                    + omqv_buffer(x,y,p,1,ibuf) + omqw_buffer(x,y,p,1,ibuf) + omqr_buffer(x,y,p,1,ibuf) + omqi_buffer(x,y,p,1,ibuf) + omqs_buffer(x,y,p,1,ibuf) + omqg_buffer(x,y,p,1,ibuf)) * geometric_thickness
+                    band_has_data = .false.
+                    do iseg = 1, lat_band_segment_count(ilat)
+                        if (lat_band_start(iseg, ilat) > lat_band_end(iseg, ilat)) cycle
+                        hist_y_start = max(ystart, lat_band_start(iseg, ilat))
+                        hist_y_end = min(ystart + min(chunk_size, ny - ystart + 1) - 1, lat_band_end(iseg, ilat))
+                        if (hist_y_start > hist_y_end) cycle
+
+                        band_has_data = .true.
+                        y_local_start = hist_y_start - ystart + 1
+                        y_local_end = hist_y_end - ystart + 1
+
+                        do y = y_local_start, y_local_end
+                            do x = 1, nx
+                                work_acc = 0.0d0
+                                lift_acc = 0.0d0
+                                do p = 1, nplev
+                                    geometric_thickness = -dz_buffer(x,y,p,1,ibuf)
+                                    work_acc = work_acc - &
+                                        (omt_buffer(x,y,p,1,ibuf) / temp_buffer(x,y,p,1,ibuf) + 1.61d0 * (omqv_buffer(x,y,p,1,ibuf) + omega_buffer(x,y,p,1,ibuf) * qv_buffer(x,y,p,1,ibuf))) * geometric_thickness
+                                    lift_acc = lift_acc - &
+                                        (omega_buffer(x,y,p,1,ibuf) * (qv_buffer(x,y,p,1,ibuf) + qw_buffer(x,y,p,1,ibuf) + qr_buffer(x,y,p,1,ibuf) + qi_buffer(x,y,p,1,ibuf) + qs_buffer(x,y,p,1,ibuf) + qg_buffer(x,y,p,1,ibuf)) &
+                                        + omqv_buffer(x,y,p,1,ibuf) + omqw_buffer(x,y,p,1,ibuf) + omqr_buffer(x,y,p,1,ibuf) + omqi_buffer(x,y,p,1,ibuf) + omqs_buffer(x,y,p,1,ibuf) + omqg_buffer(x,y,p,1,ibuf)) * geometric_thickness
+                                end do
+                                work_buffer(x,y,1,ibuf) = work_acc
+                                lift_buffer(x,y,1,ibuf) = lift_acc
                             end do
-                            work_buffer(x,y,1,ibuf) = work_acc
-                            lift_buffer(x,y,1,ibuf) = lift_acc
                         end do
+
+                        call accumulate_band_histograms(pr_buffer(:,y_local_start:y_local_end,1,ibuf), work_buffer(:,y_local_start:y_local_end,1,ibuf), lift_buffer(:,y_local_start:y_local_end,1,ibuf), &
+                                                        cell_area(:,hist_y_start:hist_y_end), pr_edges, work_edges, hist_area_chunk, hist_work_chunk, hist_lift_chunk, hist2d_work_chunk, hist2d_lift_chunk)
                     end do
 
-                    call accumulate_band_histograms(pr_buffer(:,y_local_start:y_local_end,1,ibuf), work_buffer(:,y_local_start:y_local_end,1,ibuf), lift_buffer(:,y_local_start:y_local_end,1,ibuf), &
-                                                    cell_area(:,hist_y_start:hist_y_end), pr_edges, work_edges, hist_area_chunk, hist_work_chunk, hist_lift_chunk, hist2d_work_chunk, hist2d_lift_chunk)
-
-                    !$omp critical(histogram_accumulation)
-                        hist_area_out(iday,:,ilat) = hist_area_out(iday,:,ilat) + hist_area_chunk
-                        hist_work_out(iday,:,ilat) = hist_work_out(iday,:,ilat) + hist_work_chunk
-                        hist_lift_out(iday,:,ilat) = hist_lift_out(iday,:,ilat) + hist_lift_chunk
-                        hist2d_work_out(iday,:,:,ilat) = hist2d_work_out(iday,:,:,ilat) + transpose(hist2d_work_chunk)
-                        hist2d_lift_out(iday,:,:,ilat) = hist2d_lift_out(iday,:,:,ilat) + transpose(hist2d_lift_chunk)
-                    !$omp end critical(histogram_accumulation)
+                    if (band_has_data) then
+                        !$omp critical(histogram_accumulation)
+                            hist_area_out(iday,:,ilat) = hist_area_out(iday,:,ilat) + hist_area_chunk
+                            hist_work_out(iday,:,ilat) = hist_work_out(iday,:,ilat) + hist_work_chunk
+                            hist_lift_out(iday,:,ilat) = hist_lift_out(iday,:,ilat) + hist_lift_chunk
+                            hist2d_work_out(iday,:,:,ilat) = hist2d_work_out(iday,:,:,ilat) + transpose(hist2d_work_chunk)
+                            hist2d_lift_out(iday,:,:,ilat) = hist2d_lift_out(iday,:,:,ilat) + transpose(hist2d_lift_chunk)
+                        !$omp end critical(histogram_accumulation)
+                    end if
                 end do
 
                 deallocate(hist_area_chunk)
@@ -620,23 +1128,21 @@ program compute_work_async_histograms_by_lat_band
     !$omp end master
     !$omp end parallel
 
-        call check(nf90_close(ncid_temp))
-        call check(nf90_close(ncid_omega))
-        call check(nf90_close(ncid_qv))
-        call check(nf90_close(ncid_qw))
-        call check(nf90_close(ncid_qr))
-        call check(nf90_close(ncid_qi))
-        call check(nf90_close(ncid_qs))
-        call check(nf90_close(ncid_qg))
-        call check(nf90_close(ncid_omt))
-        call check(nf90_close(ncid_omqv))
-        call check(nf90_close(ncid_omqw))
-        call check(nf90_close(ncid_omqr))
-        call check(nf90_close(ncid_omqi))
-        call check(nf90_close(ncid_omqs))
-        call check(nf90_close(ncid_omqg))
-        call check(nf90_close(ncid_pr))
-    end do
+        call close_source_files(ncid_temp, ncid_omega, ncid_qv, ncid_qw, ncid_qr, ncid_qi, ncid_qs, ncid_qg, ncid_omt, ncid_omqv, ncid_omqw, ncid_omqr, ncid_omqi, ncid_omqs, ncid_omqg, ncid_pr)
+        sources_processed = sources_processed + 1
+    end do source_loop
+
+    if (incident_log_unit /= -1) then
+        write(incident_log_unit,'(A,I0)') '#sources_total'//char(9), n_sources
+        write(incident_log_unit,'(A,I0)') '#sources_processed'//char(9), sources_processed
+        write(incident_log_unit,'(A,I0)') '#sources_skipped'//char(9), sources_skipped
+        close(incident_log_unit)
+    end if
+
+    if (sources_processed <= 0) then
+        write(error_unit,*) 'No valid sources processed. sources_total/sources_skipped=', n_sources, sources_skipped
+        stop 1
+    end if
 
     if (use_period_filter .and. month_step_count(1) <= 0) then
         write(error_unit,*) 'No timesteps matched target_period_key: ', trim(target_period_key)
@@ -662,6 +1168,7 @@ program compute_work_async_histograms_by_lat_band
     call check(nf90_def_dim(ncid_hist_out, 'nedges_pr', npr_edges, dimid_nedges_pr))
     call check(nf90_def_dim(ncid_hist_out, 'nedges_work', nwork_edges, dimid_nedges_work))
     call check(nf90_def_dim(ncid_hist_out, 'nlat', nlat_bands, dimid_hist_nlat))
+    call check(nf90_def_dim(ncid_hist_out, 'nsegment_max', max_segments_per_band, dimid_hist_nsegment))
 
     call check(nf90_def_var(ncid_hist_out, 'time', nf90_double, (/dimid_hist_time/), varid_out_time))
     call check(nf90_put_att(ncid_hist_out, varid_out_time, 'long_name', 'time'))
@@ -679,6 +1186,17 @@ program compute_work_async_histograms_by_lat_band
     call check(nf90_def_var(ncid_hist_out, 'lat_band_north', nf90_double, (/dimid_hist_nlat/), varid_lat_band_north))
     call check(nf90_put_att(ncid_hist_out, varid_lat_band_north, 'long_name', 'latitude band north boundary'))
     call check(nf90_put_att(ncid_hist_out, varid_lat_band_north, 'units', 'degrees_north'))
+    call check(nf90_def_var(ncid_hist_out, 'lat_band_segment_count', nf90_int, (/dimid_hist_nlat/), varid_lat_band_segment_count))
+    call check(nf90_put_att(ncid_hist_out, varid_lat_band_segment_count, 'long_name', 'number of active latitude segments in each band'))
+    call check(nf90_put_att(ncid_hist_out, varid_lat_band_segment_count, 'units', '1'))
+    call check(nf90_def_var(ncid_hist_out, 'lat_band_segment_south', nf90_double, (/dimid_hist_nlat, dimid_hist_nsegment/), varid_lat_band_segment_south))
+    call check(nf90_put_att(ncid_hist_out, varid_lat_band_segment_south, 'long_name', 'south boundary of each latitude-band segment'))
+    call check(nf90_put_att(ncid_hist_out, varid_lat_band_segment_south, 'units', 'degrees_north'))
+    call check(nf90_put_att(ncid_hist_out, varid_lat_band_segment_south, '_FillValue', fill_value))
+    call check(nf90_def_var(ncid_hist_out, 'lat_band_segment_north', nf90_double, (/dimid_hist_nlat, dimid_hist_nsegment/), varid_lat_band_segment_north))
+    call check(nf90_put_att(ncid_hist_out, varid_lat_band_segment_north, 'long_name', 'north boundary of each latitude-band segment'))
+    call check(nf90_put_att(ncid_hist_out, varid_lat_band_segment_north, 'units', 'degrees_north'))
+    call check(nf90_put_att(ncid_hist_out, varid_lat_band_segment_north, '_FillValue', fill_value))
 
     call check(nf90_def_var(ncid_hist_out, 'pr_edges', nf90_double, (/dimid_nedges_pr/), varid_out_lon))
     call check(nf90_def_var(ncid_hist_out, 'work_edges', nf90_double, (/dimid_nedges_work/), varid_out_lat))
@@ -713,30 +1231,82 @@ program compute_work_async_histograms_by_lat_band
     call check(nf90_put_att(ncid_hist_out, nf90_global, 'Conventions', 'CF-1.8'))
     call check(nf90_put_att(ncid_hist_out, nf90_global, 'aggregation', trim(to_lower(aggregation_mode))//' mean over native timesteps'))
     call check(nf90_put_att(ncid_hist_out, nf90_global, 'calendar_assumption', 'standard/gregorian/julian'))
-    if (use_custom_lat_band_bounds) then
+    if (use_custom_lat_band_segments) then
+        lat_mode = 'custom_segments'
+    else if (use_custom_lat_band_bounds) then
         lat_mode = 'custom_boundaries'
     else
         lat_mode = 'equal_width_default'
     end if
     call check(nf90_put_att(ncid_hist_out, nf90_global, 'latitude_band_mode', trim(lat_mode)))
     call check(nf90_put_att(ncid_hist_out, nf90_global, 'nlat_bands', nlat_bands))
+    call check(nf90_put_att(ncid_hist_out, nf90_global, 'sources_total', n_sources))
+    call check(nf90_put_att(ncid_hist_out, nf90_global, 'sources_processed', sources_processed))
+    call check(nf90_put_att(ncid_hist_out, nf90_global, 'sources_skipped', sources_skipped))
+    if (continue_on_source_error) then
+        continue_mode_attr = 'true '
+    else
+        continue_mode_attr = 'false'
+    end if
+    call check(nf90_put_att(ncid_hist_out, nf90_global, 'continue_on_source_error', trim(continue_mode_attr)))
+    if (sources_skipped > 0) then
+        call check(nf90_put_att(ncid_hist_out, nf90_global, 'skipped_sources_log', trim(incident_log_path)))
+    end if
     call check(nf90_put_att(ncid_hist_out, nf90_global, 'threshold_file', ''))
     if (use_period_filter) then
         call check(nf90_put_att(ncid_hist_out, nf90_global, 'target_period_key', trim(target_period_key)))
     end if
 
     call check(nf90_enddef(ncid_hist_out))
+
+    do ilat = 1, nlat_bands
+        do iseg = lat_band_segment_count(ilat) + 1, max_segments_per_band
+            lat_band_segment_south(iseg, ilat) = fill_value
+            lat_band_segment_north(iseg, ilat) = fill_value
+        end do
+    end do
+
+    write(*,'(A)') 'write var: time'
     call check(nf90_put_var(ncid_hist_out, varid_out_time, month_time_vals))
+    write(*,'(A)') 'write var: lat_band'
     call check(nf90_put_var(ncid_hist_out, varid_lat_band, [(dble(iedge), iedge=1,nlat_bands)]))
+    write(*,'(A)') 'write var: lat_band_south'
     call check(nf90_put_var(ncid_hist_out, varid_lat_band_south, lat_band_south(1:nlat_bands)))
+    write(*,'(A)') 'write var: lat_band_north'
     call check(nf90_put_var(ncid_hist_out, varid_lat_band_north, lat_band_north(1:nlat_bands)))
+    write(*,'(A)') 'write var: lat_band_segment_count'
+    call check(nf90_put_var(ncid_hist_out, varid_lat_band_segment_count, lat_band_segment_count(1:nlat_bands)))
+    write(*,'(A)') 'write var: lat_band_segment_south'
+    call check(nf90_put_var(ncid_hist_out, varid_lat_band_segment_south, transpose(lat_band_segment_south(:,1:nlat_bands))))
+    write(*,'(A)') 'write var: lat_band_segment_north'
+    call check(nf90_put_var(ncid_hist_out, varid_lat_band_segment_north, transpose(lat_band_segment_north(:,1:nlat_bands))))
+    write(*,'(A)') 'write var: pr_edges'
     call check(nf90_put_var(ncid_hist_out, varid_out_lon, pr_edges))
+    write(*,'(A)') 'write var: work_edges'
     call check(nf90_put_var(ncid_hist_out, varid_out_lat, work_edges))
-    call check(nf90_put_var(ncid_hist_out, varid_hist_area, hist_area_out))
-    call check(nf90_put_var(ncid_hist_out, varid_hist_work, hist_work_out))
-    call check(nf90_put_var(ncid_hist_out, varid_hist_lift, hist_lift_out))
-    call check(nf90_put_var(ncid_hist_out, varid_hist2d_work, hist2d_work_out))
-    call check(nf90_put_var(ncid_hist_out, varid_hist2d_lift, hist2d_lift_out))
+
+    ! Write histogram slabs explicitly in variable-definition order
+    ! (nlat, nbin_pr, [nbin_work], time) to avoid implicit rank-order mismatches.
+    do iday = 1, nmonths
+        do ilat = 1, nlat_bands
+            write(*,'(A,2(I0,1X))') 'write var: hist_area iday ilat=', iday, ilat
+            call check(nf90_put_var(ncid_hist_out, varid_hist_area, hist_area_out(iday,:,ilat), &
+                                    start=(/ilat, 1, iday/), count=(/1, npr_edges - 1, 1/)))
+            write(*,'(A,2(I0,1X))') 'write var: hist_work iday ilat=', iday, ilat
+            call check(nf90_put_var(ncid_hist_out, varid_hist_work, hist_work_out(iday,:,ilat), &
+                                    start=(/ilat, 1, iday/), count=(/1, npr_edges - 1, 1/)))
+            write(*,'(A,2(I0,1X))') 'write var: hist_lift iday ilat=', iday, ilat
+            call check(nf90_put_var(ncid_hist_out, varid_hist_lift, hist_lift_out(iday,:,ilat), &
+                                    start=(/ilat, 1, iday/), count=(/1, npr_edges - 1, 1/)))
+            write(*,'(A,2(I0,1X))') 'write var: hist2d_work iday ilat=', iday, ilat
+            call check(nf90_put_var(ncid_hist_out, varid_hist2d_work, transpose(hist2d_work_out(iday,:,:,ilat)), &
+                                    start=(/ilat, 1, 1, iday/), count=(/1, npr_edges - 1, nwork_edges - 1, 1/)))
+            write(*,'(A,2(I0,1X))') 'write var: hist2d_lift iday ilat=', iday, ilat
+            call check(nf90_put_var(ncid_hist_out, varid_hist2d_lift, transpose(hist2d_lift_out(iday,:,:,ilat)), &
+                                    start=(/ilat, 1, 1, iday/), count=(/1, npr_edges - 1, nwork_edges - 1, 1/)))
+        end do
+    end do
+
     call check(nf90_close(ncid_hist_out))
 
     call check(nf90_close(ncid_dz))
@@ -748,10 +1318,222 @@ contains
     subroutine read_chunk(ncid, varid, buffer, nx_in, ny_in, nz_in, t_in, ystart_in)
         integer, intent(in) :: ncid, varid, nx_in, ny_in, nz_in, t_in, ystart_in
         double precision, intent(out) :: buffer(nx_in, ny_in, nz_in, 1)
-        integer :: ncstatus_local
+        integer :: ncstatus_local, inq_status
+        character(len=nf90_max_name) :: var_name
+
+        var_name = '<unknown>'
         ncstatus_local = nf90_get_var(ncid, varid, buffer, start=(/1, ystart_in, 1, t_in/), count=(/nx_in, ny_in, nz_in, 1/))
-        call check(ncstatus_local)
+        if (ncstatus_local /= nf90_noerr) then
+            inq_status = nf90_inquire_variable(ncid, varid, name=var_name)
+            if (inq_status /= nf90_noerr) var_name = '<inq_failed>'
+            write(error_unit,*) 'NetCDF read_chunk failure: var=', trim(var_name), ' status=', trim(nf90_strerror(ncstatus_local))
+            write(error_unit,*) '  start=(1,', ystart_in, ',1,', t_in, ') count=(', nx_in, ',', ny_in, ',', nz_in, ',1)'
+            stop 1
+        end if
     end subroutine read_chunk
+
+    subroutine close_source_files(ncid_temp_in, ncid_omega_in, ncid_qv_in, ncid_qw_in, ncid_qr_in, ncid_qi_in, ncid_qs_in, ncid_qg_in, ncid_omt_in, ncid_omqv_in, ncid_omqw_in, ncid_omqr_in, ncid_omqi_in, ncid_omqs_in, ncid_omqg_in, ncid_pr_in)
+        integer, intent(inout) :: ncid_temp_in, ncid_omega_in, ncid_qv_in, ncid_qw_in, ncid_qr_in, ncid_qi_in, ncid_qs_in, ncid_qg_in
+        integer, intent(inout) :: ncid_omt_in, ncid_omqv_in, ncid_omqw_in, ncid_omqr_in, ncid_omqi_in, ncid_omqs_in, ncid_omqg_in, ncid_pr_in
+
+        if (ncid_temp_in > 0) call check(nf90_close(ncid_temp_in))
+        if (ncid_omega_in > 0) call check(nf90_close(ncid_omega_in))
+        if (ncid_qv_in > 0) call check(nf90_close(ncid_qv_in))
+        if (ncid_qw_in > 0) call check(nf90_close(ncid_qw_in))
+        if (ncid_qr_in > 0) call check(nf90_close(ncid_qr_in))
+        if (ncid_qi_in > 0) call check(nf90_close(ncid_qi_in))
+        if (ncid_qs_in > 0) call check(nf90_close(ncid_qs_in))
+        if (ncid_qg_in > 0) call check(nf90_close(ncid_qg_in))
+        if (ncid_omt_in > 0) call check(nf90_close(ncid_omt_in))
+        if (ncid_omqv_in > 0) call check(nf90_close(ncid_omqv_in))
+        if (ncid_omqw_in > 0) call check(nf90_close(ncid_omqw_in))
+        if (ncid_omqr_in > 0) call check(nf90_close(ncid_omqr_in))
+        if (ncid_omqi_in > 0) call check(nf90_close(ncid_omqi_in))
+        if (ncid_omqs_in > 0) call check(nf90_close(ncid_omqs_in))
+        if (ncid_omqg_in > 0) call check(nf90_close(ncid_omqg_in))
+        if (ncid_pr_in > 0) call check(nf90_close(ncid_pr_in))
+
+        ncid_temp_in = -1
+        ncid_omega_in = -1
+        ncid_qv_in = -1
+        ncid_qw_in = -1
+        ncid_qr_in = -1
+        ncid_qi_in = -1
+        ncid_qs_in = -1
+        ncid_qg_in = -1
+        ncid_omt_in = -1
+        ncid_omqv_in = -1
+        ncid_omqw_in = -1
+        ncid_omqr_in = -1
+        ncid_omqi_in = -1
+        ncid_omqs_in = -1
+        ncid_omqg_in = -1
+        ncid_pr_in = -1
+    end subroutine close_source_files
+
+    subroutine log_skip_incident(log_unit, source_date, stage, var_name, detail)
+        integer, intent(in) :: log_unit
+        character(len=*), intent(in) :: source_date, stage, var_name, detail
+
+        write(error_unit,'(A)') 'Skipping source '//trim(source_date)//' stage='//trim(stage)//' var='//trim(var_name)//' detail='//trim(detail)
+        if (log_unit /= -1) then
+            write(log_unit,'(A)') trim(source_date)//char(9)//trim(stage)//char(9)//trim(var_name)//char(9)//trim(detail)
+        end if
+    end subroutine log_skip_incident
+
+    subroutine log_source_incident(log_unit, source_date, stage, var_name, detail)
+        integer, intent(in) :: log_unit
+        character(len=*), intent(in) :: source_date, stage, var_name, detail
+
+        write(error_unit,'(A)') 'Source incident '//trim(source_date)//' stage='//trim(stage)//' var='//trim(var_name)//' detail='//trim(detail)
+        if (log_unit /= -1) then
+            write(log_unit,'(A)') trim(source_date)//char(9)//trim(stage)//char(9)//trim(var_name)//char(9)//trim(detail)
+        end if
+    end subroutine log_source_incident
+
+    logical function verify_time_axis_matches(ncid, var_label, reference_time, reference_units, reference_calendar, expected_nt, candidate_nt, source_date) result(matches)
+        integer, intent(in) :: ncid, expected_nt, candidate_nt
+        character(len=*), intent(in) :: var_label, reference_units, reference_calendar, source_date
+        double precision, intent(in) :: reference_time(:)
+        integer :: varid_time_local, ncstatus_local, i
+        integer :: ndims_local
+        integer :: dimids_local(nf90_max_var_dims)
+        double precision, allocatable :: candidate_time(:)
+        character(len=255) :: candidate_units, candidate_calendar
+
+        matches = .false.
+
+        if (candidate_nt /= expected_nt) then
+            write(error_unit,*) 'Structural time-axis mismatch in source date ', trim(source_date), ' variable ', trim(var_label), ': nt differs. expected/got=', expected_nt, candidate_nt
+            return
+        end if
+
+        ncstatus_local = nf90_inq_varid(ncid, 'time', varid_time_local)
+        if (ncstatus_local /= nf90_noerr) then
+            write(error_unit,*) 'Structural time-axis mismatch in source date ', trim(source_date), ' variable ', trim(var_label), ': missing time variable.'
+            return
+        end if
+
+        call check(nf90_inquire_variable(ncid, varid_time_local, ndims=ndims_local, dimids=dimids_local))
+        if (ndims_local < 1) then
+            write(error_unit,*) 'Structural time-axis mismatch in source date ', trim(source_date), ' variable ', trim(var_label), ': time variable has no dimensions.'
+            return
+        end if
+
+        if (dimids_local(ndims_local) <= 0) then
+            write(error_unit,*) 'Structural time-axis mismatch in source date ', trim(source_date), ' variable ', trim(var_label), ': invalid time dimension.'
+            return
+        end if
+
+        allocate(candidate_time(candidate_nt))
+        call check(nf90_get_var(ncid, varid_time_local, candidate_time))
+
+        candidate_units = ''
+        candidate_calendar = ''
+        ncstatus_local = nf90_get_att(ncid, varid_time_local, 'units', candidate_units)
+        if (ncstatus_local /= nf90_noerr) then
+            write(error_unit,*) 'Structural time-axis mismatch in source date ', trim(source_date), ' variable ', trim(var_label), ': missing time units.'
+            deallocate(candidate_time)
+            return
+        end if
+        ncstatus_local = nf90_get_att(ncid, varid_time_local, 'calendar', candidate_calendar)
+        if (ncstatus_local /= nf90_noerr) then
+            write(error_unit,*) 'Structural time-axis mismatch in source date ', trim(source_date), ' variable ', trim(var_label), ': missing time calendar.'
+            deallocate(candidate_time)
+            return
+        end if
+
+        if (trim(to_lower(candidate_units)) /= trim(to_lower(reference_units)) .or. trim(to_lower(candidate_calendar)) /= trim(to_lower(reference_calendar))) then
+            write(error_unit,*) 'Structural time-axis mismatch in source date ', trim(source_date), ' variable ', trim(var_label), ': time units/calendar differ.'
+            deallocate(candidate_time)
+            return
+        end if
+
+        if (use_period_filter) then
+            do i = 1, min(expected_nt, candidate_nt)
+                if (.not. time_values_match(reference_time(i), candidate_time(i))) then
+                    write(error_unit,*) 'Structural time-axis mismatch in source date ', trim(source_date), ' variable ', trim(var_label), ': time coordinate differs at index ', i
+                    deallocate(candidate_time)
+                    return
+                end if
+            end do
+        else
+            do i = 1, expected_nt
+                if (.not. time_values_match(reference_time(i), candidate_time(i))) then
+                    write(error_unit,*) 'Structural time-axis mismatch in source date ', trim(source_date), ' variable ', trim(var_label), ': time coordinate differs at index ', i
+                    deallocate(candidate_time)
+                    return
+                end if
+            end do
+        end if
+
+        deallocate(candidate_time)
+        matches = .true.
+    end function verify_time_axis_matches
+
+    logical function check_var_shape(ncid, varid, var_label, nx_expected, ny_expected, nz_expected, nt_expected, source_date, nx_got, ny_got, nz_got, nt_got)
+        integer, intent(in) :: ncid, varid, nx_expected, ny_expected, nz_expected, nt_expected
+        character(len=*), intent(in) :: var_label, source_date
+        integer, intent(out) :: nx_got, ny_got, nz_got, nt_got
+
+        call get_var_shape(ncid, varid, nx_var, ny_var, nz_var, nt_var)
+        nx_got = nx_var
+        ny_got = ny_var
+        nz_got = nz_var
+        nt_got = nt_var
+
+        if (nx_var /= nx_expected .or. ny_var /= ny_expected .or. nz_var /= nz_expected .or. (.not. use_period_filter .and. nt_var /= nt_expected)) then
+            write(error_unit,*) 'Structural shape mismatch in source date ', trim(source_date), ' variable ', trim(var_label)
+            write(error_unit,'(A,4(I0,1X))') '  expected nx ny nz nt: ', nx_expected, ny_expected, nz_expected, nt_expected
+            write(error_unit,'(A,4(I0,1X))') '  got      nx ny nz nt: ', nx_var, ny_var, nz_var, nt_var
+            check_var_shape = .false.
+            return
+        end if
+        check_var_shape = .true.
+    end function check_var_shape
+
+    subroutine get_var_shape(ncid, varid, nx_out, ny_out, nz_out, nt_out)
+        integer, intent(in) :: ncid, varid
+        integer, intent(out) :: nx_out, ny_out, nz_out, nt_out
+        integer :: ndims_local
+        integer :: dimids_local(nf90_max_var_dims)
+
+        call check(nf90_inquire_variable(ncid, varid, ndims=ndims_local, dimids=dimids_local))
+
+        select case (ndims_local)
+        case (4)
+            call check(nf90_inquire_dimension(ncid, dimids_local(1), len=nx_out))
+            call check(nf90_inquire_dimension(ncid, dimids_local(2), len=ny_out))
+            call check(nf90_inquire_dimension(ncid, dimids_local(3), len=nz_out))
+            call check(nf90_inquire_dimension(ncid, dimids_local(4), len=nt_out))
+        case (3)
+            call check(nf90_inquire_dimension(ncid, dimids_local(1), len=nx_out))
+            call check(nf90_inquire_dimension(ncid, dimids_local(2), len=ny_out))
+            nz_out = 1
+            call check(nf90_inquire_dimension(ncid, dimids_local(3), len=nt_out))
+        case default
+            write(error_unit,*) 'Unsupported variable rank in get_var_shape. rank=', ndims_local
+            stop 1
+        end select
+    end subroutine get_var_shape
+
+    logical function time_values_match(a, b)
+        double precision, intent(in) :: a, b
+        double precision :: scale
+
+        scale = max(1.0d0, abs(a), abs(b))
+        time_values_match = abs(a - b) <= 1.0d-10 * scale
+    end function time_values_match
+
+    subroutine get_var_time_len(ncid, varid, ntime_out)
+        integer, intent(in) :: ncid, varid
+        integer, intent(out) :: ntime_out
+        integer :: ndims_local
+        integer :: dimids_local(nf90_max_var_dims)
+
+        call check(nf90_inquire_variable(ncid, varid, ndims=ndims_local, dimids=dimids_local))
+        call check(nf90_inquire_dimension(ncid, dimids_local(ndims_local), len=ntime_out))
+    end subroutine get_var_time_len
 
     subroutine resolve_lat_band_boundaries(nlat_in, count_in, custom_in, bounds_in, south_out, north_out)
         integer, intent(in) :: nlat_in, count_in
@@ -772,6 +1554,35 @@ contains
             end do
         end if
     end subroutine resolve_lat_band_boundaries
+
+    subroutine resolve_lat_band_segments(nlat_in, count_in, custom_bounds_in, bounds_in, custom_segments_in, seg_count_inout, seg_south_inout, seg_north_inout, south_out, north_out)
+        integer, intent(in) :: nlat_in, count_in
+        logical, intent(in) :: custom_bounds_in, custom_segments_in
+        double precision, intent(in) :: bounds_in(:)
+        integer, intent(inout) :: seg_count_inout(:)
+        double precision, intent(inout) :: seg_south_inout(:,:), seg_north_inout(:,:)
+        double precision, intent(out) :: south_out(:), north_out(:)
+        integer :: i, s
+
+        if (custom_segments_in) then
+            do i = 1, nlat_in
+                south_out(i) = 1.0d99
+                north_out(i) = -1.0d99
+                do s = 1, seg_count_inout(i)
+                    south_out(i) = min(south_out(i), seg_south_inout(s, i))
+                    north_out(i) = max(north_out(i), seg_north_inout(s, i))
+                end do
+            end do
+        else
+            call resolve_lat_band_boundaries(nlat_in, count_in, custom_bounds_in, bounds_in, south_out, north_out)
+            seg_count_inout = 0
+            do i = 1, nlat_in
+                seg_count_inout(i) = 1
+                seg_south_inout(1, i) = south_out(i)
+                seg_north_inout(1, i) = north_out(i)
+            end do
+        end if
+    end subroutine resolve_lat_band_segments
 
     subroutine init_piecewise_log_bins(edges)
         double precision, intent(out) :: edges(:)
@@ -1088,12 +1899,6 @@ contains
         double precision, intent(inout) :: hist2d_lift_out(:,:)
         integer :: ix, iy, ipr, iwork
         double precision :: area_val, pr_val, work_val, lift_val
-
-        hist_area_out = 0.0d0
-        hist_work_out = 0.0d0
-        hist_lift_out = 0.0d0
-        hist2d_work_out = 0.0d0
-        hist2d_lift_out = 0.0d0
 
         do iy = 1, size(pr_slice, 2)
             do ix = 1, size(pr_slice, 1)
