@@ -50,5 +50,6 @@
       "env": {}
     }
   ],
-  "latex-workshop.latex.recipe.default": "pdflatex"
+  "latex-workshop.latex.recipe.default": "pdflatex → bibtex → pdflatex × 2",
+  "latex-workshop.latex.autoBuild.run": "onSave"
 }
