@@ -21,9 +21,10 @@
   ],
 
   // LaTeX Workshop: use pdflatex + bibtex (latexmk is not installed on this cluster)
+  "latex-workshop.latex.outDir": "%DIR%",
   "latex-workshop.latex.recipes": [
     {
-      "name": "pdflatex → bibtex → pdflatex × 2",
+      "name": "pdflatex-bibtex-pdflatex2",
       "tools": ["pdflatex", "bibtex", "pdflatex", "pdflatex"]
     },
     {
@@ -35,10 +36,13 @@
     {
       "name": "pdflatex",
       "command": "pdflatex",
+      "cwd": "%DIR%",
       "args": [
         "-synctex=1",
         "-interaction=nonstopmode",
+        "-halt-on-error",
         "-file-line-error",
+        "-output-directory=%DIR%",
         "%DOC%"
       ],
       "env": {}
@@ -46,10 +50,13 @@
     {
       "name": "bibtex",
       "command": "bibtex",
+      "cwd": "%DIR%",
       "args": ["%DOCFILE%"],
       "env": {}
     }
   ],
-  "latex-workshop.latex.recipe.default": "pdflatex → bibtex → pdflatex × 2",
-  "latex-workshop.latex.autoBuild.run": "onSave"
+  "latex-workshop.latex.recipe.default": "pdflatex-bibtex-pdflatex2",
+  "latex-workshop.latex.autoBuild.run": "onSave",
+  "latex-workshop.synctex.afterBuild.enabled": true,
+  "latex-workshop.view.pdf.viewer": "tab"
 }
