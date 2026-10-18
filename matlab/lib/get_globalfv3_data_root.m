@@ -22,6 +22,9 @@ function data_root = get_globalfv3_data_root()
         elseif contains(hostname, 'spirit')
             data_root = '/data/scratch/mbolot/GLOBALFV3'; 
             
+        elseif exist('/media/max/data/climate_work/processed', 'dir')
+            data_root = '/media/max/data/climate_work/processed';
+
         else
             data_root = '/scratch/gpfs/mbolot/results/GLOBALFV3';
         end

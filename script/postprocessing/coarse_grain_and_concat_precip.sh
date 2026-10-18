@@ -23,7 +23,14 @@ set -euo pipefail
 # For list-driven control/warming modes, source roots/lists are read from
 # launcher lists and are not inferred from RUN_ID.
 
-# Ensure module command is available in non-interactive shells, then load tools.
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+if [[ -f "$PROJECT_ROOT/env.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$PROJECT_ROOT/env.sh"
+fi
+
+# Ensure module command is available in non-interactive shells on HPC
 if ! type module >/dev/null 2>&1; then
   if [[ -f /etc/profile.d/modules.sh ]]; then
     # shellcheck disable=SC1091
@@ -34,64 +41,69 @@ if ! type module >/dev/null 2>&1; then
   fi
 fi
 
-if ! type module >/dev/null 2>&1; then
-  echo "Error: environment modules are unavailable; cannot run module load." >&2
-  exit 1
+if type module >/dev/null 2>&1; then
+  module purge || true
+  module load intel/2021.1.2 hdf5/intel-2021.1/1.10.6 netcdf/intel-2021.1/hdf5-1.10.6/4.7.4 cdo/netcdf-4.7.4/hdf5-1.10.6/2.0.1 nco/netcdf-4.7.4/hdf5-1.10.6/5.0.3 || true
+else
+  # Check if required tools are in PATH (e.g. via 'conda activate geo' on workstation)
+  for tool in cdo ncks ncrcat; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      echo "Error: '$tool' not found in PATH." >&2
+      echo "On your workstation, activate the geo conda environment: conda activate geo" >&2
+      exit 1
+    fi
+  done
 fi
 
-module purge
-module load intel/2021.1.2 hdf5/intel-2021.1/1.10.6 netcdf/intel-2021.1/hdf5-1.10.6/4.7.4 cdo/netcdf-4.7.4/hdf5-1.10.6/2.0.1 nco/netcdf-4.7.4/hdf5-1.10.6/5.0.3
-
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-PROJECT_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
-
 SIMULATION="${SIMULATION:-control}"
+RAW_ROOT="${GLOBALFV3_RAW_ROOT:-/scratch/cimes/GLOBALFV3}"
+DATA_ROOT="${GLOBALFV3_DATA_ROOT:-/scratch/gpfs/mbolot/results/GLOBALFV3}"
 INPUT_MODE=""
 INCLUDE_EVENT_COUNT="false"
 ENFORCE_LAT_BAND_SAFE_COARSENING="false"
 
 case "$SIMULATION" in
   control)
-    SOURCE_ROOT_PART1="/scratch/cimes/GLOBALFV3/20191020.00Z.C3072.L79x2_pire/history"
-    SOURCE_ROOT_PART2="/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire/pp"
+    SOURCE_ROOT_PART1="${SOURCE_ROOT_PART1:-$RAW_ROOT/20191020.00Z.C3072.L79x2_pire/history}"
+    SOURCE_ROOT_PART2="${SOURCE_ROOT_PART2:-$RAW_ROOT/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire/pp}"
     LIST_FILE_PART1="${LIST_FILE_PART1:-$PROJECT_ROOT/launcher/list/list_control_part1.txt}"
     LIST_FILE_PART2="${LIST_FILE_PART2:-$PROJECT_ROOT/launcher/list/list_control_part2.txt}"
-    default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/precip_coarse_C3072_360x180"
+    default_out_dir="$DATA_ROOT/precip_coarse_C3072_360x180"
     INPUT_MODE="list"
     ;;
   warming)
-    SOURCE_ROOT_PART1="/scratch/cimes/GLOBALFV3/stellar_run/processed/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp"
-    SOURCE_ROOT_PART2="/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp"
+    SOURCE_ROOT_PART1="${SOURCE_ROOT_PART1:-$RAW_ROOT/stellar_run/processed/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp}"
+    SOURCE_ROOT_PART2="${SOURCE_ROOT_PART2:-$RAW_ROOT/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp}"
     LIST_FILE_PART1="${LIST_FILE_PART1:-$PROJECT_ROOT/launcher/list/list_PLUS_4K_CO2_1270ppmv_part1.txt}"
     LIST_FILE_PART2="${LIST_FILE_PART2:-$PROJECT_ROOT/launcher/list/list_PLUS_4K_CO2_1270ppmv_part2.txt}"
-    default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/precip_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv"
+    default_out_dir="$DATA_ROOT/precip_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv"
     INPUT_MODE="list"
     ;;
   control_prate_thresholded)
-    default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_prate_thresholded"
-    default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/precip_coarse_C3072_360x180_prate_thresholded"
+    default_src_dir="$DATA_ROOT/work_coarse_C3072_1440x720_prate_thresholded"
+    default_out_dir="$DATA_ROOT/precip_coarse_C3072_360x180_prate_thresholded"
     file_prefix="work_prate_threshold_"
     INPUT_MODE="directory"
     INCLUDE_EVENT_COUNT="true"
     ;;
   warming_prate_thresholded)
-    default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv_prate_thresholded"
-    default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/precip_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv_prate_thresholded"
+    default_src_dir="$DATA_ROOT/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv_prate_thresholded"
+    default_out_dir="$DATA_ROOT/precip_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv_prate_thresholded"
     file_prefix="work_prate_threshold_"
     INPUT_MODE="directory"
     INCLUDE_EVENT_COUNT="true"
     ;;
   control_prate_thresholded_by_lat_band)
-    default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_prate_thresholded_by_lat_band"
-    default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/precip_coarse_C3072_360x180_prate_thresholded_by_lat_band"
+    default_src_dir="$DATA_ROOT/work_coarse_C3072_1440x720_prate_thresholded_by_lat_band"
+    default_out_dir="$DATA_ROOT/precip_coarse_C3072_360x180_prate_thresholded_by_lat_band"
     file_prefix="work_prate_threshold_by_lat_band_"
     INPUT_MODE="directory"
     INCLUDE_EVENT_COUNT="true"
     ENFORCE_LAT_BAND_SAFE_COARSENING="true"
     ;;
   warming_prate_thresholded_by_lat_band)
-    default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv_prate_thresholded_by_lat_band"
-    default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/precip_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv_prate_thresholded_by_lat_band"
+    default_src_dir="$DATA_ROOT/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv_prate_thresholded_by_lat_band"
+    default_out_dir="$DATA_ROOT/precip_coarse_C3072_360x180_PLUS_4K_CO2_1270ppmv_prate_thresholded_by_lat_band"
     file_prefix="work_prate_threshold_by_lat_band_"
     INPUT_MODE="directory"
     INCLUDE_EVENT_COUNT="true"

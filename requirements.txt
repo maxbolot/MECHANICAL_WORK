@@ -1,0 +1,10 @@
+numpy>=1.24.0
+scipy>=1.10.0
+pandas>=2.0.0
+xarray>=2023.01.0
+netCDF4>=1.6.0
+h5netcdf>=1.1.0
+matplotlib>=3.7.0
+cartopy>=0.21.0
+pyyaml>=6.0
+

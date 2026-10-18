@@ -3,6 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+
+if [[ -f "$PROJECT_ROOT/env.sh" ]]; then
+    # shellcheck disable=SC1091
+    source "$PROJECT_ROOT/env.sh"
+fi
+
 RUN_ID_ROOT=${RUN_ID_ROOT:-""}
 RUN_ID_TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
 if [[ -n "$RUN_ID_ROOT" ]]; then
@@ -13,20 +19,24 @@ fi
 MANIFEST_DIR=${MANIFEST_DIR:-$PROJECT_ROOT/logs/manifests}
 MANIFEST_TOOL=${MANIFEST_TOOL:-$PROJECT_ROOT/python/workflow_manifest.py}
 
-# Minimal one-date test launcher for compute_work_async.
-# Source root and date are intentionally hardcoded for quick validation.
-SOURCE_ROOT=/scratch/cimes/GLOBALFV3/20191020.00Z.C3072.L79x2_pire/history
-DATE=2020010300
+GLOBALFV3_RAW_ROOT="${GLOBALFV3_RAW_ROOT:-/scratch/cimes/GLOBALFV3}"
+GLOBALFV3_DATA_ROOT="${GLOBALFV3_DATA_ROOT:-/scratch/gpfs/mbolot/results/GLOBALFV3}"
 
-TARGET_DIR_COMPUTE_BASE=${TARGET_DIR_COMPUTE_BASE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_test}
-TARGET_DIR_HISTOGRAMS_BASE=${TARGET_DIR_HISTOGRAMS_BASE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_test}
+# Minimal one-date test launcher for compute_work_async.
+SOURCE_ROOT=${SOURCE_ROOT:-$GLOBALFV3_RAW_ROOT/20191020.00Z.C3072.L79x2_pire/history}
+DATE=${DATE:-2020080500}
+
+TARGET_DIR_COMPUTE_BASE=${TARGET_DIR_COMPUTE_BASE:-$GLOBALFV3_DATA_ROOT/work_coarse_C3072_1440x720_test}
+TARGET_DIR_HISTOGRAMS_BASE=${TARGET_DIR_HISTOGRAMS_BASE:-$GLOBALFV3_DATA_ROOT/work_histograms_test}
 TARGET_DIR_COMPUTE=${TARGET_DIR_COMPUTE:-$TARGET_DIR_COMPUTE_BASE/$RUN_ID}
 TARGET_DIR_HISTOGRAMS=${TARGET_DIR_HISTOGRAMS:-$TARGET_DIR_HISTOGRAMS_BASE/$RUN_ID}
 LOG_DIR=${LOG_DIR:-$PROJECT_ROOT/logs/slurm}
 NAMELIST_DIR=$PROJECT_ROOT/output/namelists
 
-module purge || true
-module load intel-oneapi/2024.2 hdf5/oneapi-2024.2/1.14.4 netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2
+if type module >/dev/null 2>&1; then
+    module purge || true
+    module load intel-oneapi/2024.2 hdf5/oneapi-2024.2/1.14.4 netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2 || true
+fi
 
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-3}
 
@@ -115,6 +125,10 @@ echo "[$(date +%F\ %T)] Date: $DATE" | tee -a "$RUN_LOG"
 echo "[$(date +%F\ %T)] Source root: $SOURCE_ROOT" | tee -a "$RUN_LOG"
 echo "[$(date +%F\ %T)] Binary: $COMPUTE_WORK_BIN" | tee -a "$RUN_LOG"
 
-"$COMPUTE_WORK_BIN" "$CONFIG_FILE" 2>&1 | tee -a "$RUN_LOG"
+if command -v stdbuf >/dev/null 2>&1; then
+    stdbuf -oL -eL "$COMPUTE_WORK_BIN" "$CONFIG_FILE" 2>&1 | tee -a "$RUN_LOG"
+else
+    "$COMPUTE_WORK_BIN" "$CONFIG_FILE" 2>&1 | tee -a "$RUN_LOG"
+fi
 
 echo "[$(date +%F\ %T)] Done. Outputs written to $TARGET_DIR_COMPUTE and $TARGET_DIR_HISTOGRAMS" | tee -a "$RUN_LOG"

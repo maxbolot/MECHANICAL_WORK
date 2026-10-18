@@ -3,6 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+
+if [[ -f "$PROJECT_ROOT/env.sh" ]]; then
+    # shellcheck disable=SC1091
+    source "$PROJECT_ROOT/env.sh"
+fi
+
 RUN_ID_ROOT=${RUN_ID_ROOT:-""}
 RUN_ID_TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
 if [[ -n "$RUN_ID_ROOT" ]]; then
@@ -12,22 +18,24 @@ else
 fi
 
 SIMULATION=${SIMULATION:-control_monthly_by_lat_band}
+GLOBALFV3_RAW_ROOT="${GLOBALFV3_RAW_ROOT:-/scratch/cimes/GLOBALFV3}"
+GLOBALFV3_DATA_ROOT="${GLOBALFV3_DATA_ROOT:-/scratch/gpfs/mbolot/results/GLOBALFV3}"
 
 # Select input roots, date lists, and output target by experiment.
 case "$SIMULATION" in
     control_monthly_by_lat_band)
-        SOURCE_ROOT_PART1=/scratch/cimes/GLOBALFV3/20191020.00Z.C3072.L79x2_pire/history
-        SOURCE_ROOT_PART2=/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire/pp
+        SOURCE_ROOT_PART1=${SOURCE_ROOT_PART1:-$GLOBALFV3_RAW_ROOT/20191020.00Z.C3072.L79x2_pire/history}
+        SOURCE_ROOT_PART2=${SOURCE_ROOT_PART2:-$GLOBALFV3_RAW_ROOT/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire/pp}
         LIST_FILE_PART1=${LIST_FILE_PART1:-$PROJECT_ROOT/launcher/list/list_control_part1.txt}
         LIST_FILE_PART2=${LIST_FILE_PART2:-$PROJECT_ROOT/launcher/list/list_control_part2.txt}
-        TARGET_DIR_HIST_BASE=${TARGET_DIR_HIST_BASE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_monthly_by_lat_band}
+        TARGET_DIR_HIST_BASE=${TARGET_DIR_HIST_BASE:-$GLOBALFV3_DATA_ROOT/work_histograms_monthly_by_lat_band}
         ;;
     warming_monthly_by_lat_band)
-        SOURCE_ROOT_PART1=/scratch/cimes/GLOBALFV3/stellar_run/processed/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp
-        SOURCE_ROOT_PART2=/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp
+        SOURCE_ROOT_PART1=${SOURCE_ROOT_PART1:-$GLOBALFV3_RAW_ROOT/stellar_run/processed/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp}
+        SOURCE_ROOT_PART2=${SOURCE_ROOT_PART2:-$GLOBALFV3_RAW_ROOT/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp}
         LIST_FILE_PART1=${LIST_FILE_PART1:-$PROJECT_ROOT/launcher/list/list_PLUS_4K_CO2_1270ppmv_part1.txt}
         LIST_FILE_PART2=${LIST_FILE_PART2:-$PROJECT_ROOT/launcher/list/list_PLUS_4K_CO2_1270ppmv_part2.txt}
-        TARGET_DIR_HIST_BASE=${TARGET_DIR_HIST_BASE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_monthly_by_lat_band_PLUS_4K_CO2_1270ppmv}
+        TARGET_DIR_HIST_BASE=${TARGET_DIR_HIST_BASE:-$GLOBALFV3_DATA_ROOT/work_histograms_monthly_by_lat_band_PLUS_4K_CO2_1270ppmv}
         ;;
     *)
         echo "Error: unsupported SIMULATION='$SIMULATION'. Use 'control_monthly_by_lat_band' or 'warming_monthly_by_lat_band'." >&2
@@ -149,8 +157,10 @@ emit_lat_banding_namelist() {
     echo "    lat_band_bounds_count = 0,"
 }
 
-module purge || true
-module load intel-oneapi/2024.2 hdf5/oneapi-2024.2/1.14.4 netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2
+if type module >/dev/null 2>&1; then
+    module purge || true
+    module load intel-oneapi/2024.2 hdf5/oneapi-2024.2/1.14.4 netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2 || true
+fi
 
 # Allow override; default disables file locking to avoid GPFS/Lustre HDF5 write failures.
 export HDF5_USE_FILE_LOCKING="${HDF5_USE_FILE_LOCKING:-FALSE}"
@@ -167,19 +177,25 @@ if [[ ! -x "$COMPUTE_BIN" && "$COMPUTE_BIN" == "$PROJECT_ROOT/local/bin/compute_
     COMPUTE_BIN=$PROJECT_ROOT/bin/compute_work_async_histograms_by_lat_band
 fi
 
-for f in "$LIST_FILE_PART1" "$LIST_FILE_PART2"; do
-    if [[ ! -f "$f" ]]; then
-        echo "Error: list file not found: $f" >&2
-        exit 1
-    fi
-done
+if [[ ! -f "$LIST_FILE_PART1" ]]; then
+    echo "Error: list file not found: $LIST_FILE_PART1" >&2
+    exit 1
+fi
 
-for d in "$SOURCE_ROOT_PART1" "$SOURCE_ROOT_PART2"; do
-    if [[ ! -d "$d" ]]; then
-        echo "Error: source root directory not found: $d" >&2
-        exit 1
-    fi
-done
+if [[ -n "$LIST_FILE_PART2" && "$LIST_FILE_PART2" != "/dev/null" && ! -f "$LIST_FILE_PART2" ]]; then
+    echo "Error: list file not found: $LIST_FILE_PART2" >&2
+    exit 1
+fi
+
+if [[ ! -d "$SOURCE_ROOT_PART1" ]]; then
+    echo "Error: source root directory not found: $SOURCE_ROOT_PART1" >&2
+    exit 1
+fi
+
+if [[ -n "$LIST_FILE_PART2" && "$LIST_FILE_PART2" != "/dev/null" && ! -d "$SOURCE_ROOT_PART2" ]]; then
+    echo "Error: source root directory not found: $SOURCE_ROOT_PART2" >&2
+    exit 1
+fi
 
 if [[ ! -x "$COMPUTE_BIN" ]]; then
     echo "Error: histogram binary not found or not executable." >&2

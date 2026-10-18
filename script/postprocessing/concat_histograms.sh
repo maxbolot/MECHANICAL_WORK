@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Ensure module command is available in non-interactive shells, then load tools.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+if [[ -f "$PROJECT_ROOT/env.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$PROJECT_ROOT/env.sh"
+fi
+
+# Ensure module command is available in non-interactive shells on HPC
 if ! type module >/dev/null 2>&1; then
   if [[ -f /etc/profile.d/modules.sh ]]; then
     # shellcheck disable=SC1091
@@ -12,13 +19,19 @@ if ! type module >/dev/null 2>&1; then
   fi
 fi
 
-if ! type module >/dev/null 2>&1; then
-  echo "Error: environment modules are unavailable; cannot run module load." >&2
-  exit 1
+if type module >/dev/null 2>&1; then
+  module purge || true
+  module load intel/2021.1.2 hdf5/intel-2021.1/1.10.6 netcdf/intel-2021.1/hdf5-1.10.6/4.7.4 cdo/netcdf-4.7.4/hdf5-1.10.6/2.0.1 nco/netcdf-4.7.4/hdf5-1.10.6/5.0.3 || true
+else
+  # Check if required tools are in PATH (e.g. via 'conda activate geo' on workstation)
+  for tool in cdo ncks ncrcat; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      echo "Error: '$tool' not found in PATH." >&2
+      echo "On your workstation, activate the geo conda environment: conda activate geo" >&2
+      exit 1
+    fi
+  done
 fi
-
-module purge
-module load intel/2021.1.2 hdf5/intel-2021.1/1.10.6 netcdf/intel-2021.1/hdf5-1.10.6/4.7.4 cdo/netcdf-4.7.4/hdf5-1.10.6/2.0.1 nco/netcdf-4.7.4/hdf5-1.10.6/5.0.3
 
 # Shared filesystems (e.g., GPFS/Lustre) can trigger HDF5 backend write errors
 # unless file locking is disabled. Allow user override when needed.
@@ -38,32 +51,33 @@ export HDF5_USE_FILE_LOCKING="${HDF5_USE_FILE_LOCKING:-FALSE}"
 # Set SRC_DIR and OUT_DIR explicitly to force legacy flat behavior.
 
 SIMULATION="${SIMULATION:-control}"
+DATA_ROOT="${GLOBALFV3_DATA_ROOT:-/scratch/gpfs/mbolot/results/GLOBALFV3}"
 
 case "$SIMULATION" in
   control)
-    default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms"
-    default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms"
+    default_src_dir="$DATA_ROOT/work_histograms"
+    default_out_dir="$DATA_ROOT/work_histograms"
     default_file_prefix="hist_"
     default_output_prefix="hist"
     default_date_digits=10
     ;;
   warming)
-    default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_PLUS_4K_CO2_1270ppmv"
-    default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_PLUS_4K_CO2_1270ppmv"
+    default_src_dir="$DATA_ROOT/work_histograms_PLUS_4K_CO2_1270ppmv"
+    default_out_dir="$DATA_ROOT/work_histograms_PLUS_4K_CO2_1270ppmv"
     default_file_prefix="hist_"
     default_output_prefix="hist"
     default_date_digits=10
     ;;
   control_monthly_by_lat_band)
-    default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_monthly_by_lat_band"
-    default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_monthly_by_lat_band"
+    default_src_dir="$DATA_ROOT/work_histograms_monthly_by_lat_band"
+    default_out_dir="$DATA_ROOT/work_histograms_monthly_by_lat_band"
     default_file_prefix="hist_monthly_by_lat_band_"
     default_output_prefix="hist_monthly_by_lat_band"
     default_date_digits=6
     ;;
   warming_monthly_by_lat_band)
-    default_src_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_monthly_by_lat_band_PLUS_4K_CO2_1270ppmv"
-    default_out_dir="/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_monthly_by_lat_band_PLUS_4K_CO2_1270ppmv"
+    default_src_dir="$DATA_ROOT/work_histograms_monthly_by_lat_band_PLUS_4K_CO2_1270ppmv"
+    default_out_dir="$DATA_ROOT/work_histograms_monthly_by_lat_band_PLUS_4K_CO2_1270ppmv"
     default_file_prefix="hist_monthly_by_lat_band_"
     default_output_prefix="hist_monthly_by_lat_band"
     default_date_digits=6

@@ -31,4 +31,8 @@ def get_globalfv3_data_root() -> Path:
     if _looks_like_wsl():
         return Path("/mnt/c/climate_processed_data/GLOBALFV3")
 
+    workstation_root = Path("/media/max/data/climate_work/processed")
+    if workstation_root.is_dir():
+        return workstation_root
+
     return Path("/scratch/gpfs/mbolot/results/GLOBALFV3")

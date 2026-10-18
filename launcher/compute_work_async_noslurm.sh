@@ -3,6 +3,12 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PROJECT_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+
+if [[ -f "$PROJECT_ROOT/env.sh" ]]; then
+    # shellcheck disable=SC1091
+    source "$PROJECT_ROOT/env.sh"
+fi
+
 RUN_ID_ROOT=${RUN_ID_ROOT:-""}
 RUN_ID_TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
 if [[ -n "$RUN_ID_ROOT" ]]; then
@@ -18,23 +24,25 @@ MANIFEST_TOOL=${MANIFEST_TOOL:-$PROJECT_ROOT/python/workflow_manifest.py}
 # Dates are read from two list files, each mapped to its own source root.
 
 SIMULATION=${SIMULATION:-control}
+GLOBALFV3_RAW_ROOT="${GLOBALFV3_RAW_ROOT:-/scratch/cimes/GLOBALFV3}"
+GLOBALFV3_DATA_ROOT="${GLOBALFV3_DATA_ROOT:-/scratch/gpfs/mbolot/results/GLOBALFV3}"
 
 case "$SIMULATION" in
     control)
-        SOURCE_ROOT_PART1=/scratch/cimes/GLOBALFV3/20191020.00Z.C3072.L79x2_pire/history
-        SOURCE_ROOT_PART2=/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire/pp
+        SOURCE_ROOT_PART1=${SOURCE_ROOT_PART1:-$GLOBALFV3_RAW_ROOT/20191020.00Z.C3072.L79x2_pire/history}
+        SOURCE_ROOT_PART2=${SOURCE_ROOT_PART2:-$GLOBALFV3_RAW_ROOT/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire/pp}
         LIST_FILE_PART1=${LIST_FILE_PART1:-$PROJECT_ROOT/launcher/list/list_control_part1.txt}
         LIST_FILE_PART2=${LIST_FILE_PART2:-$PROJECT_ROOT/launcher/list/list_control_part2.txt}
-        TARGET_DIR_COMPUTE_BASE=${TARGET_DIR_COMPUTE_BASE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720}
-        TARGET_DIR_HISTOGRAMS_BASE=${TARGET_DIR_HISTOGRAMS_BASE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms}
+        TARGET_DIR_COMPUTE_BASE=${TARGET_DIR_COMPUTE_BASE:-$GLOBALFV3_DATA_ROOT/work_coarse_C3072_1440x720}
+        TARGET_DIR_HISTOGRAMS_BASE=${TARGET_DIR_HISTOGRAMS_BASE:-$GLOBALFV3_DATA_ROOT/work_histograms}
         ;;
     warming)
-        SOURCE_ROOT_PART1=/scratch/cimes/GLOBALFV3/stellar_run/processed/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp
-        SOURCE_ROOT_PART2=/scratch/cimes/GLOBALFV3/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp
+        SOURCE_ROOT_PART1=${SOURCE_ROOT_PART1:-$GLOBALFV3_RAW_ROOT/stellar_run/processed/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp}
+        SOURCE_ROOT_PART2=${SOURCE_ROOT_PART2:-$GLOBALFV3_RAW_ROOT/stellar_run/processed_new/20191020.00Z.C3072.L79x2_pire_PLUS_4K_CO2_1270ppmv/pp}
         LIST_FILE_PART1=${LIST_FILE_PART1:-$PROJECT_ROOT/launcher/list/list_PLUS_4K_CO2_1270ppmv_part1.txt}
         LIST_FILE_PART2=${LIST_FILE_PART2:-$PROJECT_ROOT/launcher/list/list_PLUS_4K_CO2_1270ppmv_part2.txt}
-        TARGET_DIR_COMPUTE_BASE=${TARGET_DIR_COMPUTE_BASE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv}
-        TARGET_DIR_HISTOGRAMS_BASE=${TARGET_DIR_HISTOGRAMS_BASE:-/scratch/gpfs/mbolot/results/GLOBALFV3/work_histograms_PLUS_4K_CO2_1270ppmv}
+        TARGET_DIR_COMPUTE_BASE=${TARGET_DIR_COMPUTE_BASE:-$GLOBALFV3_DATA_ROOT/work_coarse_C3072_1440x720_PLUS_4K_CO2_1270ppmv}
+        TARGET_DIR_HISTOGRAMS_BASE=${TARGET_DIR_HISTOGRAMS_BASE:-$GLOBALFV3_DATA_ROOT/work_histograms_PLUS_4K_CO2_1270ppmv}
         ;;
     *)
         echo "Error: unsupported SIMULATION='$SIMULATION'. Use 'control' or 'warming'." >&2
@@ -45,11 +53,13 @@ esac
 TARGET_DIR_COMPUTE=${TARGET_DIR_COMPUTE:-$TARGET_DIR_COMPUTE_BASE/$RUN_ID}
 TARGET_DIR_HISTOGRAMS=${TARGET_DIR_HISTOGRAMS:-$TARGET_DIR_HISTOGRAMS_BASE/$RUN_ID}
 
-module purge || true
-module load intel-oneapi/2024.2 hdf5/oneapi-2024.2/1.14.4 netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2
+if type module >/dev/null 2>&1; then
+    module purge || true
+    module load intel-oneapi/2024.2 hdf5/oneapi-2024.2/1.14.4 netcdf/oneapi-2024.2/hdf5-1.14.4/4.9.2 || true
+fi
 
 # Hardcoded OpenMP setting for serial execution.
-export OMP_NUM_THREADS=2
+export OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
 
 NAMELIST_DIR=$PROJECT_ROOT/output/namelists
 
@@ -64,7 +74,7 @@ if [[ ! -f "$LIST_FILE_PART1" ]]; then
     exit 1
 fi
 
-if [[ ! -f "$LIST_FILE_PART2" ]]; then
+if [[ -n "$LIST_FILE_PART2" && "$LIST_FILE_PART2" != "/dev/null" && ! -f "$LIST_FILE_PART2" ]]; then
     echo "Error: list file not found: $LIST_FILE_PART2" >&2
     exit 1
 fi
@@ -74,7 +84,7 @@ if [[ ! -d "$SOURCE_ROOT_PART1" ]]; then
     exit 1
 fi
 
-if [[ ! -d "$SOURCE_ROOT_PART2" ]]; then
+if [[ -n "$LIST_FILE_PART2" && "$LIST_FILE_PART2" != "/dev/null" && ! -d "$SOURCE_ROOT_PART2" ]]; then
     echo "Error: source root directory not found: $SOURCE_ROOT_PART2" >&2
     exit 1
 fi
@@ -198,7 +208,9 @@ EOF
 }
 
 process_list "$LIST_FILE_PART1" "$SOURCE_ROOT_PART1"
-process_list "$LIST_FILE_PART2" "$SOURCE_ROOT_PART2"
+if [[ -n "$LIST_FILE_PART2" && "$LIST_FILE_PART2" != "/dev/null" && -f "$LIST_FILE_PART2" ]]; then
+    process_list "$LIST_FILE_PART2" "$SOURCE_ROOT_PART2"
+fi
 
 if (( ${#FAILED_DATES[@]} > 0 )); then
     echo "[$(date +%F\ %T)] All dates processed serially with ${#FAILED_DATES[@]} failure(s)." | tee -a "$RUN_LOG"

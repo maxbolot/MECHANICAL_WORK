@@ -17,3 +17,11 @@ archive/
 # Python bytecode/cache
 __pycache__/
 *.py[cod]
+
+# Local machine environment files
+.env
+.env.local
+*.local.sh
+
+# NetCDF data files (should live in external data roots)
+*.nc
